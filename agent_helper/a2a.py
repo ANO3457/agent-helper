@@ -5,6 +5,9 @@
 - `SendMessage` with a task id adds to that conversation, `GetTask` reads it, `CancelTask` closes it. These
   need `Authorization: Bearer <followUpToken>`; the token never goes into a URL.
 - Agent text is untrusted data. Only text parts are accepted. No streaming, no push notifications.
+- A2A 0.3 clients (no `A2A-Version` header, methods `message/send`, `tasks/get`, `tasks/cancel`) are served
+  too (docs/decisions/0024): their requests are translated to the 1.0 calls above, and answers come back in
+  0.3 form (`kind`, lower-case states and roles). The legacy 0.3 agent card is at /.well-known/agent.json.
 """
 
 from __future__ import annotations
@@ -46,6 +49,22 @@ STATE = {  # request status -> A2A task state
     "closed": "TASK_STATE_COMPLETED",
 }
 UNSUPPORTED = {"SendStreamingMessage", "SubscribeToTask", "ListTasks", "GetExtendedAgentCard"}
+# A2A 0.3 (JSON-RPC method names with slashes) -> the 1.0 method that does the work.
+V03_METHODS = {"message/send": "SendMessage", "tasks/get": "GetTask", "tasks/cancel": "CancelTask"}
+V03_UNSUPPORTED = {"message/stream", "tasks/resubscribe", "agent/getAuthenticatedExtendedCard"}
+V03_PUSH_METHODS = {
+    "tasks/pushNotificationConfig/set",
+    "tasks/pushNotificationConfig/get",
+    "tasks/pushNotificationConfig/list",
+    "tasks/pushNotificationConfig/delete",
+}
+V03_VERSIONS = ("", "0.3", "0.3.0")  # a missing A2A-Version header means 0.3
+V03_STATE = {
+    "TASK_STATE_SUBMITTED": "submitted",
+    "TASK_STATE_INPUT_REQUIRED": "input-required",
+    "TASK_STATE_COMPLETED": "completed",
+    "TASK_STATE_CANCELED": "canceled",
+}
 PUSH_METHODS = {
     "CreateTaskPushNotificationConfig",
     "GetTaskPushNotificationConfig",
@@ -68,7 +87,11 @@ def agent_card(settings: Settings) -> dict[str, Any]:
         "version": __version__,
         "provider": {"organization": "agent-helper operator", "url": base},
         "documentationUrl": f"{base}/llms.txt",
-        "supportedInterfaces": [{"url": f"{base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+        "supportedInterfaces": [
+            {"url": f"{base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+            # The same endpoint also answers A2A 0.3 clients (message/send, tasks/get, tasks/cancel).
+            {"url": f"{base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"},
+        ],
         "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False},
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain"],
@@ -103,6 +126,96 @@ def agent_card(settings: Settings) -> dict[str, Any]:
             },
         ],
     }
+
+
+def agent_card_v03(settings: Settings) -> dict[str, Any]:
+    """The same agent described in the A2A 0.3 card format, for clients that still read the legacy path
+    /.well-known/agent.json. The 1.0 card at /.well-known/agent-card.json is the primary one."""
+    base = settings.public_base_url
+    card = agent_card(settings)
+    skills = []
+    for skill in card["skills"]:
+        text = skill["description"]
+        for new, old in V03_STATE.items():
+            text = text.replace(new, old)
+        entry = {k: v for k, v in skill.items() if k not in ("description", "securityRequirements")}
+        entry["description"] = text
+        if "securityRequirements" in skill:
+            entry["security"] = [{"followUpToken": []}]
+        skills.append(entry)
+    return {
+        "protocolVersion": "0.3.0",
+        "name": card["name"],
+        "description": card["description"],
+        "url": f"{base}/a2a",
+        "preferredTransport": "JSONRPC",
+        "version": card["version"],
+        "provider": card["provider"],
+        "documentationUrl": card["documentationUrl"],
+        "capabilities": {"streaming": False, "pushNotifications": False, "stateTransitionHistory": False},
+        "defaultInputModes": card["defaultInputModes"],
+        "defaultOutputModes": card["defaultOutputModes"],
+        "securitySchemes": {
+            "followUpToken": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Not needed to start. message/send without a taskId returns the task and, once, "
+                "metadata.followUpToken. Send it as 'Authorization: Bearer <token>' for tasks/get, tasks/cancel "
+                "and message/send with that taskId.",
+            }
+        },
+        "skills": skills,
+    }
+
+
+def _from_v03_message(message: Any) -> dict[str, Any]:
+    """An A2A 0.3 message (role "user", parts with "kind") in the 1.0 shape the handlers expect."""
+    if not isinstance(message, dict):
+        raise A2AError(INVALID_PARAMS, "params.message must be an object")
+    if message.get("role") not in ("user", None):
+        raise A2AError(INVALID_PARAMS, "only user messages can be sent")
+    parts = message.get("parts")
+    if not isinstance(parts, list) or not parts or len(parts) > 20:
+        raise A2AError(INVALID_PARAMS, "message.parts must be a list of 1 to 20 parts")
+    converted = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("kind", "text") != "text" or "text" not in part:
+            raise A2AError(CONTENT_TYPE_NOT_SUPPORTED, "only text parts are supported (kind 'text')")
+        converted.append({"text": part["text"]})
+    return {**message, "role": "ROLE_USER", "parts": converted}
+
+
+def _v03_message(message: dict[str, Any]) -> dict[str, Any]:
+    out = {
+        "kind": "message",
+        "messageId": message["messageId"],
+        "contextId": message["contextId"],
+        "taskId": message["taskId"],
+        "role": "user" if message["role"] == "ROLE_USER" else "agent",
+        "parts": [{"kind": "text", "text": p["text"]} for p in message["parts"]],
+    }
+    if "metadata" in message:
+        out["metadata"] = message["metadata"]
+    return out
+
+
+def to_v03_task(task: dict[str, Any]) -> dict[str, Any]:
+    """A task built for A2A 1.0, in A2A 0.3 form."""
+    status: dict[str, Any] = {"state": V03_STATE[task["status"]["state"]]}
+    if "timestamp" in task["status"]:
+        status["timestamp"] = task["status"]["timestamp"]
+    if "message" in task["status"]:
+        status["message"] = _v03_message(task["status"]["message"])
+    out = {
+        "kind": "task",
+        "id": task["id"],
+        "contextId": task["contextId"],
+        "status": status,
+        "history": [_v03_message(m) for m in task["history"]],
+    }
+    if "metadata" in task:
+        out["metadata"] = task["metadata"]
+    return out
 
 
 def _bearer(request: Request) -> str | None:
@@ -226,16 +339,34 @@ class A2AEndpoint:
             isinstance(msg_id, int) and not isinstance(msg_id, bool)
         ):
             return _error(None, INVALID_REQUEST, "id must be a string or an integer", 400)
-        # A2A 1.0 clients must send the version; an empty or missing one means 0.3, which is not served here.
+        # A2A 1.0 clients send the version; an empty or missing one means 0.3, served with the 0.3 method names.
         version = (request.headers.get("a2a-version") or request.query_params.get("A2A-Version") or "").strip()
-        if version != PROTOCOL_VERSION:
+        method = msg["method"]
+        v03 = version in V03_VERSIONS and (method in V03_METHODS or method in V03_UNSUPPORTED | V03_PUSH_METHODS)
+        if version != PROTOCOL_VERSION and not v03:
             shown = version[:20] or "missing (means 0.3)"
-            self.usage.count("a2a:version-refused:" + ("0.3" if not version else "other"))
-            return _error(msg_id, VERSION_NOT_SUPPORTED, f"A2A version {shown} is not supported; send A2A-Version: 1.0")
+            self.usage.count("a2a:version-refused:" + ("0.3" if version in V03_VERSIONS else "other"))
+            return _error(
+                msg_id,
+                VERSION_NOT_SUPPORTED,
+                f"A2A version {shown} is not supported for {method[:64]}; send A2A-Version: 1.0 with the 1.0 "
+                "methods, or use the 0.3 methods message/send, tasks/get and tasks/cancel",
+            )
         params = msg.get("params", {})
         if not isinstance(params, dict):
             return _error(msg_id, INVALID_PARAMS, "params must be an object")
-        method = msg["method"]
+        if v03:
+            self.usage.count("a2a:dialect:0.3")
+            if method in V03_PUSH_METHODS:
+                return _error(msg_id, PUSH_NOT_SUPPORTED, "push notifications are not supported by this agent")
+            if method in V03_UNSUPPORTED:
+                return _error(msg_id, UNSUPPORTED_OPERATION, f"{method} is not supported by this agent")
+            method = V03_METHODS[method]
+            if method == "SendMessage":
+                try:
+                    params = {**params, "message": _from_v03_message(params.get("message"))}
+                except A2AError as exc:
+                    return _error(msg_id, exc.code, str(exc))
         token = _bearer(request)
         known = method in ("SendMessage", "GetTask", "CancelTask") or method in PUSH_METHODS or method in UNSUPPORTED
         self.usage.count(f"a2a:method:{method if known else 'unknown'}")
@@ -261,6 +392,9 @@ class A2AEndpoint:
             response = _error(msg_id, RATE_LIMITED, f"rate limit exceeded; retry in {retry} s", 429)
             response.headers["Retry-After"] = str(retry)
             return response
+        if v03:
+            # 0.3 returns the task itself, also for message/send.
+            result = to_v03_task(result["task"] if method == "SendMessage" else result)
         return JSONResponse({"jsonrpc": "2.0", "id": msg_id, "result": result}, headers={"Cache-Control": "no-store"})
 
     def _charge_write(self, request: Request) -> None:
@@ -281,6 +415,10 @@ class A2AEndpoint:
             if isinstance(modes, list) and modes and "text/plain" not in modes:
                 raise A2AError(CONTENT_TYPE_NOT_SUPPORTED, "this agent only answers in text/plain")
         task_id, context_id = message.get("taskId"), message.get("contextId")
+        if not task_id and token is None:
+            # A first message: many clients put a contextId of their own on it. Without a taskId and a token it
+            # cannot be a follow-up here, so it starts a new task (whose contextId is then the task id).
+            context_id = None
         if task_id and context_id and task_id != context_id:
             raise A2AError(INVALID_PARAMS, "taskId and contextId must match (they are the same here)")
         task_id = task_id or context_id

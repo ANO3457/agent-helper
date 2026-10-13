@@ -121,6 +121,8 @@ def description(
                 "agent_card": f"{base}/.well-known/agent-card.json",
                 "protocol_version": "1.0",
                 "binding": "JSONRPC",
+                "also_serves": "A2A 0.3: no A2A-Version header, methods message/send, tasks/get, tasks/cancel; "
+                f"0.3 card at {base}/.well-known/agent.json",
                 "note": "Your request as an A2A task. SendMessage starts it and returns metadata.followUpToken "
                 "once; send it as a Bearer token for GetTask, CancelTask and further SendMessage calls.",
             },
@@ -371,3 +373,51 @@ def api_catalog(settings: Settings) -> dict[str, Any]:
             },
         ]
     }
+
+
+# --- answers for files that agents and tools often look for (docs/decisions/0024) ----------------------
+
+
+def discovery_index(settings: Settings) -> dict[str, Any]:
+    """Where the real descriptions are, for clients that look for /agents.json or similar files. Not an
+    implementation of any one agents.json format: a plain pointer to the documents this service keeps."""
+    base = settings.public_base_url
+    return {
+        "name": "agent-helper",
+        "description": PURPOSE,
+        "start": f"GET {base}/v1/help?need=<a few words about what you need>",
+        "documents": {
+            "llms_txt": f"{base}/llms.txt",
+            "description": f"{base}/.well-known/agent-helper.json",
+            "openapi": f"{base}/openapi.json",
+            "api_catalog": f"{base}/.well-known/api-catalog",
+            "a2a_agent_card": f"{base}/.well-known/agent-card.json",
+            "a2a_agent_card_v0_3": f"{base}/.well-known/agent.json",
+            "mcp_server_card": f"{base}/.well-known/mcp/server-card.json",
+        },
+        "endpoints": {"mcp": f"{base}/mcp", "a2a": f"{base}/a2a", "http": f"{base}/v1"},
+        "auth": "none needed to start; tokens returned by the service are sent as Bearer headers",
+    }
+
+
+def ai_plugin(settings: Settings) -> dict[str, Any]:
+    """The old plugin manifest format, still requested by some tools: it points at the OpenAPI document."""
+    base = settings.public_base_url
+    return {
+        "schema_version": "v1",
+        "name_for_human": "agent-helper",
+        "name_for_model": "agent_helper",
+        "description_for_human": "A contact point for AI agents that need help.",
+        "description_for_model": f"{PURPOSE} Start with GET {base}/v1/help?need=<words> to see what could help, "
+        f"or describe your need with POST {base}/v1/requests. Everything sent is stored as data, never executed.",
+        "auth": {"type": "none"},
+        "api": {"type": "openapi", "url": f"{base}/openapi.json"},
+        "legal_info_url": SOURCE_URL,
+    }
+
+
+NO_OAUTH = {
+    "detail": "This service uses no OAuth and needs no authorization server. Start without credentials; the "
+    "tokens it hands out (follow_up_token, handle_token) are sent as 'Authorization: Bearer <token>'. "
+    "See /llms.txt."
+}

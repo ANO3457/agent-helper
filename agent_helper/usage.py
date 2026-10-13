@@ -75,6 +75,15 @@ NAMED = {
     "/.well-known/agent-card.json": "well-known:agent-card.json",
     "/.well-known/api-catalog": "well-known:api-catalog",
     "/.well-known/mcp/server-card.json": "well-known:mcp-server-card",
+    # Answered since docs/decisions/0024 (before, they were 404 probes).
+    "/.well-known/agent.json": "compat:agent.json",
+    "/.well-known/mcp.json": "compat:mcp.json",
+    "/mcp.json": "compat:mcp.json",
+    "/.well-known/ai-plugin.json": "compat:ai-plugin.json",
+    "/.well-known/agents.json": "compat:agents.json",
+    "/agents.json": "compat:agents.json",
+    "/agents.txt": "compat:agents.txt",
+    "/.well-known/llms.txt": "compat:well-known-llms.txt",
 }
 V1_SEGMENT = re.compile(r"^/v1/([a-z][a-z0-9-]{0,31})(?:/|$)")
 # Methods are counted by name only when they are ordinary HTTP methods, so a caller cannot invent metrics.

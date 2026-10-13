@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from . import __version__, discovery, helpdesk
-from .a2a import A2AEndpoint, agent_card
+from .a2a import A2AEndpoint, agent_card, agent_card_v03
 from .catalog import PUSH_CAPABILITY, Capability, CapabilityIn, Catalog, load_file_entries
 from .config import Settings, parse_networks
 from .console import build_console
@@ -301,6 +301,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def mcp_server_card() -> JSONResponse:
         # A public description; MCP clients and registries may read it from any origin.
         return JSONResponse(mcp.server_card(), headers={"Access-Control-Allow-Origin": "*"})
+
+    # --- files that agents and tools often look for (docs/decisions/0024) ---------------------------------
+    public = {"Access-Control-Allow-Origin": "*"}
+
+    @app.get("/.well-known/agent.json", include_in_schema=False)
+    def a2a_agent_card_v03() -> JSONResponse:
+        # The legacy A2A 0.3 location; 0.3 clients read this card and then talk 0.3 to /a2a.
+        return JSONResponse(agent_card_v03(settings), headers=public)
+
+    @app.get("/.well-known/mcp.json", include_in_schema=False)
+    @app.get("/mcp.json", include_in_schema=False)
+    def mcp_json() -> JSONResponse:
+        return JSONResponse(mcp.server_card(), headers=public)
+
+    @app.get("/.well-known/ai-plugin.json", include_in_schema=False)
+    def ai_plugin() -> JSONResponse:
+        return JSONResponse(discovery.ai_plugin(settings), headers=public)
+
+    @app.get("/.well-known/agents.json", include_in_schema=False)
+    @app.get("/agents.json", include_in_schema=False)
+    def agents_json() -> JSONResponse:
+        return JSONResponse(discovery.discovery_index(settings), headers=public)
+
+    @app.get("/.well-known/llms.txt", include_in_schema=False)
+    @app.get("/agents.txt", include_in_schema=False)
+    def llms_alias() -> PlainTextResponse:
+        return PlainTextResponse(discovery.llms_txt(settings, store.instance), headers=link_header)
+
+    @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+    @app.get("/.well-known/oauth-protected-resource/{rest:path}", include_in_schema=False)
+    @app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+    @app.get("/.well-known/openid-configuration", include_in_schema=False)
+    def no_oauth(rest: str = "") -> JSONResponse:
+        # Still a 404: that is what tells OAuth-aware MCP clients that no authorization is needed. The body
+        # says so in words for agents that read it.
+        return JSONResponse(discovery.NO_OAUTH, status_code=404, headers=public)
 
     @v1.get("/capabilities/{cap_id}", tags=["capabilities"])
     def get_capability(cap_id: Annotated[str, Path(max_length=64)]) -> Capability:
