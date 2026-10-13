@@ -1113,6 +1113,29 @@ class Store:
             )
             self._db.execute("DELETE FROM usage_daily WHERE day < ?", (cutoff,))
 
+    def usage_on(self, day: str, prefix: str) -> list[dict[str, Any]]:
+        """One day's counts for metrics starting with `prefix`, largest first."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT metric, family, count FROM usage_daily WHERE day = ? AND metric LIKE ? ESCAPE '\\'"
+                " ORDER BY count DESC, metric, family",
+                (day, escaped + "%"),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def meta_value(self, name: str) -> str | None:
+        with self._lock:
+            return self._meta_value(name)
+
+    def set_meta(self, name: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO instance_meta (name, value) VALUES (?, ?)"
+                " ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                (name, value),
+            )
+
     def usage(self, days: int) -> list[dict[str, Any]]:
         """Totals per metric and client family over the last `days` days (today included), largest first."""
         since = (datetime.now(UTC) - timedelta(days=days - 1)).strftime("%Y-%m-%d")

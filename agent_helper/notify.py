@@ -205,6 +205,21 @@ class Notifier:
             log.exception("could not queue notification")
             self._miss()
 
+    def report(self, event: str, text: str, **fields: Any) -> None:
+        """Queue an operator report the service writes itself (such as the daily summary of refused calls).
+        It is not one of the NOTIFY_EVENTS about agent activity, so that list does not filter it."""
+        if not self.enabled:
+            return
+        try:
+            self._start()
+            body = json.dumps(self._envelope(event, text) | fields, ensure_ascii=False).encode("utf-8")
+            self._queue.put_nowait((time.monotonic(), body))
+        except queue.Full:
+            self._miss()
+        except Exception:
+            log.exception("could not queue notification")
+            self._miss()
+
     def _miss(self, count: int = 1) -> None:
         with self._missed_lock:
             self._missed += count

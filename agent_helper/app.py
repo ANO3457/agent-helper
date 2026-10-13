@@ -8,6 +8,7 @@ import hmac
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Annotated, Any, Literal
 
@@ -71,8 +72,8 @@ from .store import (
     SignatureRejected,
     Store,
 )
+from .usage import REFUSAL_PREFIX, Usage
 from .usage import V1_SEGMENT as V1_ROUTE_SEGMENT
-from .usage import Usage
 
 USAGE_FLUSH_SECONDS = 300
 NOT_FOUND = "not found or wrong token"
@@ -127,10 +128,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:  # counting must never take the service down
             logging.getLogger("agent_helper").exception("could not store usage counts")
 
+    def send_refusal_digest() -> None:
+        """Once a day, if calls were refused the day before, tell the operator through the webhook
+        (docs/decisions/0025). Only the counted kinds go out: protocol, method, reason, client family."""
+        if not (settings.notify_refusal_digest and settings.usage_stats and app.state.notifier.enabled):
+            return
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        if (store.meta_value("refusal_digest_day") or "") >= yesterday:
+            return
+        rows = store.usage_on(yesterday, REFUSAL_PREFIX)
+        store.set_meta("refusal_digest_day", yesterday)
+        if not rows:
+            return
+        total = sum(r["count"] for r in rows)
+        top = [
+            {"what": r["metric"][len(REFUSAL_PREFIX) :], "client": r["family"] or None, "count": r["count"]}
+            for r in rows[:15]
+        ]
+        listed = "; ".join(f"{t['count']}x {t['what']}" for t in top[:5]) + (" ..." if len(rows) > 5 else "")
+        app.state.notifier.report(
+            "refusals.daily",
+            f"{total} call(s) were refused on {yesterday}: {listed}",
+            day=yesterday,
+            total=total,
+            top=top,
+            usage_api_url=f"{settings.public_base_url}/admin/v1/usage?days=2",
+        )
+
     async def flush_usage_periodically() -> None:
         while True:
             await asyncio.sleep(USAGE_FLUSH_SECONDS)
             await asyncio.to_thread(flush_usage)
+            try:
+                await asyncio.to_thread(send_refusal_digest)
+            except Exception:  # a summary must never take the service down
+                logging.getLogger("agent_helper").exception("could not send the refusal summary")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -157,6 +189,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = store
     app.state.push = push
     app.state.usage = usage
+    app.state.send_refusal_digest = send_refusal_digest
+    app.state.flush_usage = flush_usage
     write_limiter = TokenBucket(settings.write_per_minute)
     global_write_limiter = TokenBucket(settings.global_write_per_minute)
     app.add_middleware(

@@ -103,6 +103,13 @@ example an automation workflow that forwards `text` to a chat app. Example event
 }
 ```
 
+Once a day, if agents' calls were refused the day before (wrong protocol version, invalid input, wrong
+token, rate limit), a `refusals.daily` event follows with a one-line `text` such as
+`39 call(s) were refused on 2026-10-12: 37x a2a:SendMessage:version_not_supported; ...`, the total and
+the most frequent kinds ([decision 0025](decisions/0025-refused-calls-and-daily-summary.md)). It carries
+no content and no addresses. A receiving workflow that filters by event name needs to let it through;
+`NOTIFY_REFUSAL_DIGEST=false` turns it off.
+
 `admin_api_url` needs the admin bearer secret; a receiving workflow can call it to fetch the text. When
 more than `NOTIFY_MAX_PER_MIN` events arrive, or some could not be delivered, a `digest` event with the
 count (`missed`) and links to the open requests follows, at most once a minute.

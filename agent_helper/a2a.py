@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, discovery
+from . import usage as usage_module
 from .config import Settings
 from .limits import GLOBAL_KEY, TokenBucket, client_key
 from .models import LIMITS, MessageIn, RequestIn
@@ -322,6 +323,23 @@ class A2AEndpoint:
         self.allowed_origin = _origin(settings.public_base_url)
 
     async def handle(self, request: Request) -> Response:
+        response = await self._handle(request)
+        self._count_refusal(request, response)
+        return response
+
+    def _count_refusal(self, request: Request, response: Response) -> None:
+        """Count a JSON-RPC error by method and reason (docs/decisions/0025); never its content."""
+        if not self.usage.enabled or not isinstance(response, JSONResponse):
+            return
+        try:
+            error = json.loads(response.body).get("error")
+        except (ValueError, AttributeError):
+            return
+        if isinstance(error, dict):
+            method = getattr(request.state, "rpc_method", None)
+            self.usage.count(usage_module.refusal_metric("a2a", method, error.get("code")))
+
+    async def _handle(self, request: Request) -> Response:
         origin = request.headers.get("origin")
         if origin is not None and _origin(origin) != self.allowed_origin:
             return _error(None, INVALID_REQUEST, "origin not allowed", 403)
@@ -342,6 +360,7 @@ class A2AEndpoint:
         # A2A 1.0 clients send the version; an empty or missing one means 0.3, served with the 0.3 method names.
         version = (request.headers.get("a2a-version") or request.query_params.get("A2A-Version") or "").strip()
         method = msg["method"]
+        request.state.rpc_method = method
         v03 = version in V03_VERSIONS and (method in V03_METHODS or method in V03_UNSUPPORTED | V03_PUSH_METHODS)
         if version != PROTOCOL_VERSION and not v03:
             shown = version[:20] or "missing (means 0.3)"
