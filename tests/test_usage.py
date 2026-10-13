@@ -111,12 +111,12 @@ def test_disabled_usage_counts_nothing():
 def test_requests_are_counted_by_kind_only(client, admin_headers):
     client.get("/llms.txt", headers={"User-Agent": "GPTBot/1.2"})
     client.get("/llms.txt", headers={"User-Agent": "GPTBot/1.2"})
-    client.get("/.well-known/ai-plugin.json", headers={"User-Agent": "python-httpx/0.27"})
+    client.get("/.well-known/security.txt", headers={"User-Agent": "python-httpx/0.27"})
     client.get("/", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0 Firefox/131.0"})
     client.get("/healthz")
     c = counts(client, admin_headers)
     assert c[("llms.txt", "ai_crawler")] == 2
-    assert c[("probe:ai-plugin.json", "http_library")] == 1
+    assert c[("probe:security.txt", "http_library")] == 1
     assert c[("landing:html", "browser")] == 1
     assert not any(metric.startswith(("admin", "/admin")) or metric == "healthz" for metric, _ in c)
     # Nothing that identifies a client is stored: no address, no full User-Agent.
@@ -151,10 +151,12 @@ def test_mcp_client_names_and_tools_are_counted(client, admin_headers):
 def test_a2a_methods_and_version_refusals_are_counted(client, admin_headers):
     body = {"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": "x"}}
     client.post("/a2a", json=body, headers={"A2A-Version": "1.0"})
-    client.post("/a2a", json={**body, "method": "message/send"})
+    client.post("/a2a", json={**body, "method": "tasks/get"})  # A2A 0.3, served
+    client.post("/a2a", json=body)  # a 1.0 method without the 1.0 header
     client.post("/a2a", json=body, headers={"A2A-Version": "0.2"})
     c = counts(client, admin_headers)
-    assert c[("a2a:method:GetTask", "")] == 1
+    assert c[("a2a:method:GetTask", "")] == 2
+    assert c[("a2a:dialect:0.3", "")] == 1
     assert c[("a2a:version-refused:0.3", "")] == 1
     assert c[("a2a:version-refused:other", "")] == 1
 

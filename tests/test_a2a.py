@@ -34,8 +34,10 @@ def test_agent_card(client):
         "skills",
     ):
         assert key in card
-    (iface,) = card["supportedInterfaces"]
-    assert iface == {"url": "http://testserver/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
+    assert card["supportedInterfaces"] == [
+        {"url": "http://testserver/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        {"url": "http://testserver/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"},
+    ]
     assert card["capabilities"]["streaming"] is False and card["capabilities"]["pushNotifications"] is False
     assert "followUpToken" in card["securitySchemes"]
     assert all({"id", "name", "description", "tags"} <= set(s) for s in card["skills"])
@@ -127,7 +129,7 @@ def test_protocol_errors(client):
         "/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "GetTask"}, headers={"Origin": "https://evil.example"}
     )
     assert r.status_code == 403
-    # A missing or empty version means 0.3, which is not served.
+    # A missing or empty version means 0.3: the 1.0 method names are refused then (0.3 uses message/send).
     r = client.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "SendMessage", "params": user_message("hi")})
     assert r.json()["error"]["code"] == -32009
     assert rpc(client, "GetTask", headers={"A2A-Version": ""}).json()["error"]["code"] == -32009
@@ -212,3 +214,98 @@ def test_refused_handles_do_not_spend_the_write_budget(make_client):
             r = rpc(client, "SendMessage", user_message("x", metadata={"handle": handle}))
             assert r.json()["error"]["code"] == -32602
     assert "task" in rpc(client, "SendMessage", user_message("second write")).json()["result"]
+
+
+# --- A2A 0.3 clients (docs/decisions/0024) -------------------------------------------------------------
+
+
+def rpc03(client, method, params=None, *, token=None, msg_id=1):
+    hdrs = {"Authorization": f"Bearer {token}"} if token else {}
+    body = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params or {}}
+    return client.post("/a2a", json=body, headers=hdrs)  # no A2A-Version header: 0.3
+
+
+def message03(text, **extra):
+    return {
+        "message": {
+            "kind": "message",
+            "messageId": "m1",
+            "role": "user",
+            "parts": [{"kind": "text", "text": text}],
+            **extra,
+        }
+    }
+
+
+def test_a2a_03_client_can_start_read_answer_and_cancel(client, admin_headers):
+    r = rpc03(client, "message/send", message03("I need a human to scan a paper form."))
+    assert r.status_code == 200, r.text
+    task = r.json()["result"]
+    assert task["kind"] == "task" and task["status"]["state"] == "submitted"
+    assert task["history"][0] == {
+        "kind": "message",
+        "messageId": f"{task['id']}-0",
+        "contextId": task["id"],
+        "taskId": task["id"],
+        "role": "user",
+        "parts": [{"kind": "text", "text": "I need a human to scan a paper form."}],
+        "metadata": task["history"][0]["metadata"],
+    }
+    token = task["metadata"]["followUpToken"]
+
+    client.post(
+        f"/admin/v1/requests/{task['id']}/replies",
+        json={"message": "Done.", "status": "answered"},
+        headers=admin_headers,
+    )
+    got = rpc03(client, "tasks/get", {"id": task["id"], "historyLength": 1}, token=token).json()["result"]
+    assert got["status"]["state"] == "input-required"
+    assert got["status"]["message"]["role"] == "agent" and got["status"]["message"]["parts"][0]["text"] == "Done."
+    assert [m["role"] for m in got["history"]] == ["agent"]
+
+    answer = rpc03(client, "message/send", message03("Thanks!", taskId=task["id"]), token=token).json()["result"]
+    assert answer["status"]["state"] == "submitted" and answer["history"][-1]["role"] == "user"
+
+    canceled = rpc03(client, "tasks/cancel", {"id": task["id"]}, token=token).json()["result"]
+    assert canceled["status"]["state"] == "canceled"
+    again = rpc03(client, "tasks/cancel", {"id": task["id"]}, token=token).json()
+    assert again["error"]["code"] == -32002
+
+
+def test_a2a_03_errors_use_the_same_codes(client):
+    wrong = "not-a-token"
+    assert rpc03(client, "tasks/get", {"id": "req_x"}, token=wrong).json()["error"]["code"] == -32001
+    file_part = {"message": {"role": "user", "parts": [{"kind": "file", "file": {"uri": "https://x.example/f"}}]}}
+    assert rpc03(client, "message/send", file_part).json()["error"]["code"] == -32005
+    agent_role = message03("hi")
+    agent_role["message"]["role"] = "agent"
+    assert rpc03(client, "message/send", agent_role).json()["error"]["code"] == -32602
+    assert rpc03(client, "message/stream", message03("hi")).json()["error"]["code"] == -32004
+    assert rpc03(client, "tasks/pushNotificationConfig/set", {}).json()["error"]["code"] == -32003
+    # 0.3 method names are not served to clients that declare 1.0, and 1.0 names not to 0.3 clients.
+    r = client.post(
+        "/a2a",
+        json={"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": message03("hi")},
+        headers={"A2A-Version": "1.0"},
+    )
+    assert r.json()["error"]["code"] == -32601
+    assert rpc03(client, "SendMessage", user_message("hi")).json()["error"]["code"] == -32009
+    assert (
+        client.post(
+            "/a2a",
+            json={"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": message03("hi")},
+            headers={"A2A-Version": "0.3.0"},
+        ).json()["result"]["kind"]
+        == "task"
+    )
+
+
+def test_legacy_agent_card_for_03_clients(client):
+    r = client.get("/.well-known/agent.json")
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == "*"
+    card = r.json()
+    assert card["protocolVersion"] == "0.3.0" and card["url"] == "http://testserver/a2a"
+    assert card["preferredTransport"] == "JSONRPC"
+    assert card["securitySchemes"]["followUpToken"]["type"] == "http"
+    assert all("TASK_STATE" not in s["description"] for s in card["skills"])
+    assert any(s.get("security") == [{"followUpToken": []}] for s in card["skills"])

@@ -34,3 +34,4 @@ Decisions are recorded as short decision records under [`decisions/`](decisions/
 | [0021](decisions/0021-finding-help-in-one-call.md) | Finding help in one call, and an MCP server card |
 | [0022](decisions/0022-signed-board-checkpoints.md) | Signed checkpoints of the board head |
 | [0023](decisions/0023-anonymous-usage-counts.md) | Anonymous usage counts, and an IndexNow key file |
+| [0024](decisions/0024-a2a-0-3-and-common-discovery-files.md) | A2A 0.3 clients, and answers for often-probed discovery files |

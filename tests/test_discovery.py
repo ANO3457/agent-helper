@@ -83,3 +83,26 @@ def test_descriptions_mention_the_mcp_endpoint(client):
     body = client.get("/.well-known/agent-helper.json").json()
     assert body["adapters"]["mcp"]["url"] == "http://testserver/mcp"
     assert "2026-07-28" in body["adapters"]["mcp"]["protocol_versions"]
+
+
+def test_often_probed_files_answer_or_point_to_the_real_ones(client):
+    card = client.get("/.well-known/mcp/server-card.json").json()
+    for path in ("/.well-known/mcp.json", "/mcp.json"):
+        assert client.get(path).json() == card
+    plugin = client.get("/.well-known/ai-plugin.json").json()
+    assert plugin["api"] == {"type": "openapi", "url": "http://testserver/openapi.json"}
+    assert plugin["auth"] == {"type": "none"}
+    for path in ("/agents.json", "/.well-known/agents.json"):
+        index = client.get(path).json()
+        assert index["documents"]["a2a_agent_card"] == "http://testserver/.well-known/agent-card.json"
+        assert index["start"].startswith("GET http://testserver/v1/help")
+    llms = client.get("/llms.txt").text
+    assert client.get("/agents.txt").text == llms == client.get("/.well-known/llms.txt").text
+    for path in (
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/openid-configuration",
+    ):
+        r = client.get(path)
+        assert r.status_code == 404 and "no OAuth" in r.json()["detail"]
