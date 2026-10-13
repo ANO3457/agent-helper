@@ -18,9 +18,12 @@ pings are always answered automatically.
    - the whole message (at most 80 characters) is a ping or a short health-check phrase from a fixed
      list ("ping", "health check", "are you there", ...). The answer is "pong" plus one sentence on what
      the service is and how to ask for real help, with a link to `/llms.txt`;
-   - the whole message asks to reply with exactly one short word ("Reply with exactly OK", "Antworte genau
-     mit READY"): letters, digits, `-` or `_`, at most 16 characters. The answer is that word and nothing
-     else, so liveness checks that compare the answer pass.
+   - the whole message explicitly asks to reply with one short word: with "exactly", "only" or "just"
+     ("genau", "nur"), or with the word in quotes ("Reply with exactly OK", "say 'pong'", "Antworte genau
+     mit READY"). The word has letters, digits, `-` or `_`, at most 16 ASCII characters. The answer is that
+     word and nothing else, so liveness checks that compare the answer pass. "answer with sources" or
+     "say hello" are not explicit and stay ordinary requests. Messages must be ASCII, so Unicode
+     look-alikes never match.
 2. **Nothing else is echoed or answered automatically.** Longer text, extra words, other characters or
    anything that merely contains "ping" is an ordinary request for the operator.
 3. **The operator is not alerted** for these (no `request.created` event, no push). They are counted in
