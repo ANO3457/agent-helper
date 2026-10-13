@@ -215,6 +215,7 @@ class Settings:
     relay_secret: str | None = None
     relay_ca_file: Path | None = None
     usage_stats: bool = True
+    notify_refusal_digest: bool = True
     indexnow_key: str | None = None
     usage_retention_days: int = 400
 
@@ -269,6 +270,7 @@ class Settings:
             else None,
             help_board_window=_int("HELP_BOARD_WINDOW", cls.help_board_window),
             usage_stats=_bool("USAGE_STATS", cls.usage_stats),
+            notify_refusal_digest=_bool("NOTIFY_REFUSAL_DIGEST", cls.notify_refusal_digest),
             indexnow_key=_indexnow_key(os.environ.get("INDEXNOW_KEY")),
             usage_retention_days=_int("USAGE_RETENTION_DAYS", cls.usage_retention_days),
             push_mode=_push_mode(os.environ.get("PUSH_MODE")),

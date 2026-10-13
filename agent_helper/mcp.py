@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__, discovery, helpdesk
+from . import usage as usage_module
 from .catalog import Catalog
 from .config import Settings
 from .handles import HANDLE_PATTERN
@@ -814,6 +815,23 @@ class McpEndpoint:
         }
 
     async def handle(self, request: Request) -> Response:
+        response = await self._handle(request)
+        self._count_refusal(request, response)
+        return response
+
+    def _count_refusal(self, request: Request, response: Response) -> None:
+        """Count a JSON-RPC error by method and reason (docs/decisions/0025); never its content."""
+        if not self.usage.enabled or not isinstance(response, JSONResponse):
+            return
+        try:
+            error = json.loads(response.body).get("error")
+        except (ValueError, AttributeError):
+            return
+        if isinstance(error, dict):
+            method = getattr(request.state, "rpc_method", None)
+            self.usage.count(usage_module.refusal_metric("mcp", method, error.get("code")))
+
+    async def _handle(self, request: Request) -> Response:
         origin = request.headers.get("origin")
         if origin is not None and origin.rstrip("/").lower() != self.allowed_origin:
             return _error(None, INVALID_REQUEST, "origin not allowed", 403)
@@ -826,6 +844,7 @@ class McpEndpoint:
             return _error(None, PARSE_ERROR, "parse error: the body must be one JSON-RPC message", 400)
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
             return _error(None, INVALID_REQUEST, "invalid request: send one JSON-RPC 2.0 request per POST", 400)
+        request.state.rpc_method = msg["method"]
         if "id" not in msg:
             return Response(status_code=202)  # notifications need no answer; none of them changes anything here
         if not _valid_id(msg["id"]):

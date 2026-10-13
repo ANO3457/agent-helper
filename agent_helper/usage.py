@@ -170,6 +170,51 @@ def normalize_client_name(name: object) -> str | None:
     return "other"
 
 
+# Refused calls (docs/decisions/0025): which protocol, which method, why. Every part from a fixed set.
+JSONRPC_ERRORS = {
+    -32700: "parse_error",
+    -32600: "invalid_request",
+    -32601: "method_not_found",
+    -32602: "invalid_params",
+    -32603: "internal_error",
+    -32001: "task_not_found",
+    -32002: "task_not_cancelable",
+    -32003: "push_not_supported",
+    -32004: "unsupported_operation",
+    -32005: "content_type_not_supported",
+    -32009: "version_not_supported",
+    -32020: "header_mismatch",
+    -32022: "unsupported_protocol_version",
+    -32029: "rate_limited",
+}
+A2A_METHODS = frozenset(
+    {
+        "SendMessage", "GetTask", "CancelTask", "SendStreamingMessage", "SubscribeToTask", "ListTasks",
+        "GetExtendedAgentCard", "CreateTaskPushNotificationConfig", "GetTaskPushNotificationConfig",
+        "ListTaskPushNotificationConfigs", "DeleteTaskPushNotificationConfig", "message/send", "message/stream",
+        "tasks/get", "tasks/cancel", "tasks/resubscribe", "agent/getAuthenticatedExtendedCard",
+        "tasks/pushNotificationConfig/set", "tasks/pushNotificationConfig/get",
+        "tasks/pushNotificationConfig/list", "tasks/pushNotificationConfig/delete",
+    }
+)  # fmt: skip
+MCP_METHODS = frozenset(
+    {
+        "initialize", "ping", "server/discover", "tools/list", "tools/call", "resources/list",
+        "resources/read", "resources/templates/list", "prompts/list", "prompts/get", "completion/complete",
+        "logging/setLevel", "notifications/initialized",
+    }
+)  # fmt: skip
+REFUSAL_PREFIX = "refused:"
+
+
+def refusal_metric(protocol: str, method: object, code: object) -> str:
+    """`refused:<protocol>:<method>:<reason>` for a JSON-RPC error, with every part from a fixed set."""
+    known = A2A_METHODS if protocol == "a2a" else MCP_METHODS
+    label = method if isinstance(method, str) and method in known else "unknown"
+    reason = JSONRPC_ERRORS.get(code, "other") if isinstance(code, int) else "other"
+    return f"{REFUSAL_PREFIX}{protocol}:{label}:{reason}"
+
+
 class Usage:
     """Thread-safe in-memory daily counters, flushed into the store."""
 
@@ -195,7 +240,13 @@ class Usage:
             return
         endpoint = endpoint_of(scope, status, self.v1_segments)
         if endpoint is not None:
-            self.count(endpoint, client_family(_header(scope, b"user-agent")))
+            family = client_family(_header(scope, b"user-agent"))
+            self.count(endpoint, family)
+            # Refused calls on the HTTP API: the endpoint group and the status code, nothing else. (A 404 is
+            # counted as a probe above; for /v1/ it is usually a wrong token, so it is a refusal too.)
+            if 400 <= status < 500 and scope["path"].startswith("/v1/"):
+                group = endpoint_of(scope, 200, self.v1_segments)
+                self.count(f"{REFUSAL_PREFIX}http:{group}:{status}", family)
 
     def record_client_name(self, protocol: str, name: object) -> None:
         """The software name a client reports about itself (for example in MCP initialize)."""

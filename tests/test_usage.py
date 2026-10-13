@@ -208,3 +208,69 @@ def test_indexnow_key_is_validated(monkeypatch):
         Settings.from_env()
     monkeypatch.setenv("INDEXNOW_KEY", " abcdef0123456789 ")
     assert Settings.from_env().indexnow_key == "abcdef0123456789"
+
+
+# --- refused calls (docs/decisions/0025) -----------------------------------------------------------
+
+
+def test_refused_calls_are_counted_by_protocol_method_and_reason(client, admin_headers):
+    client.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": "x"}})  # no version
+    client.post(
+        "/a2a",
+        json={"jsonrpc": "2.0", "id": 1, "method": "GetTask", "params": {"id": "x"}},
+        headers={"A2A-Version": "1.0"},
+    )  # no token: task not found
+    client.post("/a2a", json={"jsonrpc": "2.0", "id": 1, "method": "made-up/thing <script>", "params": {}})
+    client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
+    client.post("/v1/requests", json={"message": ""})  # 422
+    client.get("/v1/requests/req_x", headers={"Authorization": "Bearer wrong"})  # 404
+    c = counts(client, admin_headers)
+    assert c[("refused:a2a:GetTask:version_not_supported", "")] == 1
+    assert c[("refused:a2a:GetTask:task_not_found", "")] == 1
+    assert c[("refused:a2a:unknown:version_not_supported", "")] == 1  # an invented method name is not kept
+    assert any(m.startswith("refused:mcp:tools/call:") for m, _ in c)
+    assert sum(n for (m, _), n in c.items() if m == "refused:http:v1:requests:post:422") == 1
+    assert any(m.startswith("refused:http:v1:requests:get:404") for m, _ in c)
+    assert not any("script" in m for m, _ in c)
+
+
+def test_daily_refusal_summary_goes_out_once_and_only_if_needed(make_client, admin_headers):
+    import json
+
+    from test_notify import WEBHOOK, Recorder
+
+    client = make_client(notify_webhook_url=WEBHOOK)
+    notifier = client.app.state.notifier
+    rec = Recorder()
+    notifier.transport = rec
+    store = client.app.state.store
+    yesterday = __import__("datetime").datetime.now(__import__("datetime").UTC) - __import__("datetime").timedelta(
+        days=1
+    )
+    day = yesterday.strftime("%Y-%m-%d")
+    store.add_usage(
+        [
+            (day, "refused:a2a:SendMessage:version_not_supported", "", 37),
+            (day, "refused:http:v1:requests:post:422", "http_library", 2),
+            (day, "llms.txt", "ai_crawler", 5),
+        ]
+    )
+    client.app.state.send_refusal_digest()
+    client.app.state.send_refusal_digest()  # the same day again: nothing
+    assert notifier.flush()
+    (event,) = rec.events
+    assert event["event"] == "refusals.daily" and event["total"] == 39 and event["day"] == day
+    assert event["text"].startswith(f"39 call(s) were refused on {day}: 37x a2a:SendMessage:version_not_supported")
+    assert all("llms" not in json.dumps(t) for t in event["top"])
+
+
+def test_no_summary_without_refusals_or_when_turned_off(make_client):
+    from test_notify import WEBHOOK, Recorder
+
+    for overrides in ({}, {"notify_refusal_digest": False}):
+        client = make_client(notify_webhook_url=WEBHOOK, **overrides)
+        rec = Recorder()
+        client.app.state.notifier.transport = rec
+        client.app.state.send_refusal_digest()
+        assert client.app.state.notifier.flush()
+        assert rec.events == []
