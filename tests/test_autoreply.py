@@ -22,7 +22,8 @@ def test_pings_are_recognised(message):
     ("message", "word"),
     [
         ("Reply with exactly OK", "OK"),
-        ("reply with READY", "READY"),
+        ("reply with 'READY'", "READY"),
+        ('say "pong"', "pong"),
         ("Respond with 'pong'.", "pong"),
         ("Antworte genau mit OK.", "OK"),
         ("please answer only with ack-42", "ack-42"),
@@ -43,6 +44,16 @@ def test_reply_with_exactly_one_word(message, word):
         "Can you help me test my API?",
         "ping " * 30,
         "I need a ping test tool for my network",
+        "reply with READY",
+        "answer with sources",
+        "answer quickly",
+        "respond asap",
+        "say hello",
+        "reply please",
+        "reply with exactly K",  # Kelvin sign
+        "health checK",  # Kelvin sign folds to "k" when lower-cased
+        "reply with exactly okſ",  # long s
+        "reply with exactly ıd",  # dotless i
     ],
 )
 def test_everything_else_is_an_ordinary_request(message):

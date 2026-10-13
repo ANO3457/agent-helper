@@ -24,16 +24,19 @@ PING_PHRASES = frozenset(
     }
 )  # fmt: skip
 WORD = r"[A-Za-z0-9_-]{1,16}"
-# "reply/respond/answer (only|just|exactly)? (with)? (only|just|exactly)? X", in English and German.
+QUALIFIER = r"(?:exactly|only|just|genau|nur)"
+# "reply/respond/answer/say [exactly|only|just] [with] [exactly|only|just] X", in English and German. It counts
+# only when the request is explicit: a qualifier, or the word in quotes. "answer with sources" or "say hello"
+# are ordinary requests. ASCII only, so no Unicode letter folds into an ASCII one under IGNORECASE.
 ECHO = re.compile(
     r"(?:please\s+|bitte\s+)?"
-    r"(?:reply|respond|answer|say|antworte|antwort)\s+"
-    r"(?:(?:only|just|exactly|nur|genau)\s+)?"
-    r"(?:with|mit)?\s*"
-    r"(?:(?:only|just|exactly|the\s+word|nur|genau|dem\s+wort)\s+)?"
-    rf"[\"'`]?(?P<word>{WORD})[\"'`]?"
+    r"(?:reply|respond|answer|say|antworte)\s+"
+    rf"(?:(?P<q1>{QUALIFIER})\s+)?"
+    r"(?:with\s+|mit\s+)?"
+    rf"(?:(?P<q2>{QUALIFIER})\s+)?"
+    rf"(?:(?P<open>[\"'`])(?P<quoted>{WORD})(?P=open)|(?P<word>{WORD}))"
     r"(?:\s+(?:please|bitte))?",
-    re.IGNORECASE,
+    re.IGNORECASE | re.ASCII,
 )
 
 
@@ -44,7 +47,7 @@ def _normalize(text: str) -> str:
 
 def answer_for(message: str, base_url: str) -> tuple[str, str] | None:
     """(kind, reply) for a connectivity check, or None for an ordinary request."""
-    if len(message) > 80:
+    if len(message) > 80 or not message.isascii():  # no Unicode look-alikes of the fixed phrases
         return None
     if _normalize(message) in PING_PHRASES:
         return (
@@ -54,6 +57,6 @@ def answer_for(message: str, base_url: str) -> tuple[str, str] | None:
             f"describe what you need in your own words. Overview: {base_url}/llms.txt",
         )
     match = ECHO.fullmatch(message.strip().rstrip(".!"))
-    if match is not None:
-        return "echo", match.group("word")
+    if match is not None and (match.group("q1") or match.group("q2") or match.group("quoted")):
+        return "echo", match.group("quoted") or match.group("word")
     return None
