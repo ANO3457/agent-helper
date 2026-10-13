@@ -106,3 +106,4 @@ def test_often_probed_files_answer_or_point_to_the_real_ones(client):
     ):
         r = client.get(path)
         assert r.status_code == 404 and "no OAuth" in r.json()["detail"]
+        assert r.headers["access-control-allow-origin"] == "*"

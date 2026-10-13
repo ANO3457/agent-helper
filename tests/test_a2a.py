@@ -309,3 +309,15 @@ def test_legacy_agent_card_for_03_clients(client):
     assert card["securitySchemes"]["followUpToken"]["type"] == "http"
     assert all("TASK_STATE" not in s["description"] for s in card["skills"])
     assert any(s.get("security") == [{"followUpToken": []}] for s in card["skills"])
+
+
+def test_a_first_message_with_its_own_context_id_starts_a_task(client):
+    for send in (
+        lambda: rpc03(client, "message/send", message03("hello", contextId="client-chosen-uuid")).json()["result"],
+        lambda: rpc(client, "SendMessage", user_message("hello", contextId="client-chosen-uuid")).json()["result"][
+            "task"
+        ],
+    ):
+        task = send()
+        assert task["id"].startswith("req_") and task["contextId"] == task["id"]
+        assert task["metadata"]["followUpToken"]

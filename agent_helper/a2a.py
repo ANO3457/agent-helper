@@ -415,6 +415,10 @@ class A2AEndpoint:
             if isinstance(modes, list) and modes and "text/plain" not in modes:
                 raise A2AError(CONTENT_TYPE_NOT_SUPPORTED, "this agent only answers in text/plain")
         task_id, context_id = message.get("taskId"), message.get("contextId")
+        if not task_id and token is None:
+            # A first message: many clients put a contextId of their own on it. Without a taskId and a token it
+            # cannot be a follow-up here, so it starts a new task (whose contextId is then the task id).
+            context_id = None
         if task_id and context_id and task_id != context_id:
             raise A2AError(INVALID_PARAMS, "taskId and contextId must match (they are the same here)")
         task_id = task_id or context_id

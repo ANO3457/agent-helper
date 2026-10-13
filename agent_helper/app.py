@@ -336,7 +336,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def no_oauth(rest: str = "") -> JSONResponse:
         # Still a 404: that is what tells OAuth-aware MCP clients that no authorization is needed. The body
         # says so in words for agents that read it.
-        return JSONResponse(discovery.NO_OAUTH, status_code=404)
+        return JSONResponse(discovery.NO_OAUTH, status_code=404, headers=public)
 
     @v1.get("/capabilities/{cap_id}", tags=["capabilities"])
     def get_capability(cap_id: Annotated[str, Path(max_length=64)]) -> Capability:
