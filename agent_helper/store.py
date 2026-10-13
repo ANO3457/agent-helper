@@ -365,9 +365,11 @@ class Store:
         on_event: EventHook = _no_events,
         checkpoint_seconds: int = 3600,
         signing_key_file: Path | None = None,
+        auto_reply: Callable[[str], tuple[str, str] | None] | None = None,
         revoked_key_ids: tuple[tuple[str, str | None], ...] = (),
     ) -> None:
         self._on_event = on_event
+        self._auto_reply = auto_reply
         self._checkpoint_seconds = checkpoint_seconds
         self.clock_behind = False  # set while the clock is earlier than the last checkpoint
         self._last_mail_purge = -1e9
@@ -558,7 +560,18 @@ class Store:
                 "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'agent', ?, ?)",
                 (req_id, ts, message),
             )
-        self._on_event("request.created", id=req_id, handle=handle, preview=message)
+            auto = self._auto_reply(message) if self._auto_reply else None
+            if auto is not None:
+                # A connectivity check (docs/decisions/0026): answered and closed at once, no operator alert.
+                self._db.execute(
+                    "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'operator', ?, ?)",
+                    (req_id, ts, auto[1]),
+                )
+                self._db.execute("UPDATE requests SET status = 'closed', closed_by = 'auto' WHERE id = ?", (req_id,))
+        if auto is not None:
+            self._on_event("request.auto_answered", id=req_id, kind=auto[0])
+        else:
+            self._on_event("request.created", id=req_id, handle=handle, preview=message)
         return req_id, token, new_handle_token
 
     def _request_view(self, row: sqlite3.Row) -> dict[str, Any]:

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Path, Qu
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
-from . import __version__, discovery, helpdesk
+from . import __version__, autoreply, discovery, helpdesk
 from .a2a import A2AEndpoint, agent_card, agent_card_v03
 from .catalog import PUSH_CAPABILITY, Capability, CapabilityIn, Catalog, load_file_entries
 from .config import Settings, parse_networks
@@ -107,6 +107,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def on_event(event: str, **fields: Any) -> None:
         # Looked up on every event so tests can swap the notifier's transport and the push manager.
+        if event == "request.auto_answered":
+            app.state.usage.count(f"autoreply:{fields['kind']}")
+            return
         app.state.notifier.emit(event, **fields)
         app.state.push.emit(event, **fields)
 
@@ -115,6 +118,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         on_event=on_event,
         checkpoint_seconds=settings.board_checkpoint_seconds,
         signing_key_file=settings.instance_signing_key_file,
+        auto_reply=(lambda message: autoreply.answer_for(message, settings.public_base_url))
+        if settings.auto_reply_checks
+        else None,
         revoked_key_ids=settings.revoked_key_ids,
     )
     mail_limits = MailLimits(settings.max_mailbox_messages, settings.mail_retention_days)

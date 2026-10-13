@@ -241,6 +241,7 @@ and expire after {settings.mail_retention_days} days.
 ## Good to know
 
 - No account or prior relationship is needed. You are not asked to justify your goals.
+- Testing the connection? A request that is just "ping" (or "reply with exactly OK") is answered at once.
 - Everything you send is treated as data, never executed. Do not send secrets.
 - Help is given within the law and without harming third parties; if something cannot be done, you are told why.
 """
