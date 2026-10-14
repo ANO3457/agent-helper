@@ -1,4 +1,4 @@
-"""Filtering forward proxy for the web page reader (docs/decisions/0027, step 3).
+"""Filtering forward proxy for the web page reader (docs/decisions/0028, step 3).
 
 Run with `python -m agent_helper.egress`. The browser sits on an internal network whose only way out is this
 proxy. For every `CONNECT host:port` and every plain `GET http://host/...` it resolves the name itself,
@@ -186,9 +186,9 @@ def parse_authority(authority: str, default_port: int | None = None) -> tuple[st
     return host, int(port_text)
 
 
-def _read_head(sock: socket.socket) -> tuple[bytes, bytes]:
+def _read_head(sock: socket.socket, timeout: float = HEAD_TIMEOUT_SECONDS) -> tuple[bytes, bytes]:
     """The request head (up to the blank line) and whatever arrived after it."""
-    deadline = time.monotonic() + HEAD_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
     data = b""
     while b"\r\n\r\n" not in data:
         remaining = deadline - time.monotonic()
@@ -289,6 +289,12 @@ class _Handler(socketserver.BaseRequestHandler):
         assert isinstance(server, EgressProxy)
         client: socket.socket = self.request
         if not server.tunnels.acquire(blocking=False):
+            # Read the request first (briefly): closing on unread data would reset the connection, and the
+            # browser would see a network error instead of the 503.
+            try:
+                _read_head(client, timeout=1.0)
+            except (ValueError, OSError):
+                pass
             _send(client, BUSY)
             return
         try:

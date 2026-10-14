@@ -1,4 +1,4 @@
-"""The isolated browser for the web page reader (docs/decisions/0027, step 2).
+"""The isolated browser for the web page reader (docs/decisions/0028, step 2).
 
 Run with `python -m agent_helper.browser_server` in the browser image. It starts Camoufox as a Playwright
 server on a secret WebSocket path. Its container sits only on an internal network with the egress proxy and

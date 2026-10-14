@@ -1,4 +1,4 @@
-# Example only (docs/decisions/0027): the web page reader next to the service. Copy, adapt, never commit the
+# Example only (docs/decisions/0028): the web page reader next to the service. Copy, adapt, never commit the
 # live file. Three containers and three networks:
 #
 #   service ──browse-ctl (internal)── browse-gateway ──browse-inner (internal)── browser

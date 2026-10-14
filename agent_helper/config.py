@@ -106,7 +106,7 @@ def _browse_mode(raw: str | None) -> str:
 
 
 def _gateway_url(raw: str | None) -> str | None:
-    """The browse gateway on the internal network (docs/decisions/0027): http(s), a host, nothing else."""
+    """The browse gateway on the internal network (docs/decisions/0028): http(s), a host, nothing else."""
     if not raw:
         return None
     try:
@@ -209,6 +209,7 @@ class Settings:
     public_base_url: str = "http://localhost:8080"
     data_dir: Path = Path("./data")
     admin_secret: str | None = None
+    operator_bot_token: str | None = None
     trust_proxy_headers: bool = False
     max_body_bytes: int = 16 * 1024
     write_per_minute: int = 10
@@ -275,7 +276,7 @@ class Settings:
 
     @property
     def browse_enabled(self) -> bool:
-        """The web page reader needs the switch, a gateway and its secret (docs/decisions/0027, step 1)."""
+        """The web page reader needs the switch, a gateway and its secret (docs/decisions/0028, step 1)."""
         return (
             self.browse_mode == "on"
             and self.browse_gateway_url is not None
@@ -290,6 +291,7 @@ class Settings:
             public_base_url=os.environ.get("PUBLIC_BASE_URL", cls.public_base_url).rstrip("/"),
             data_dir=Path(os.environ.get("DATA_DIR", str(cls.data_dir))),
             admin_secret=os.environ.get("ADMIN_AUTH_SECRET") or None,
+            operator_bot_token=os.environ.get("OPERATOR_BOT_TOKEN") or None,
             trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", cls.trust_proxy_headers),
             max_body_bytes=_int("MAX_BODY_BYTES", cls.max_body_bytes),
             write_per_minute=_int("RATE_LIMIT_WRITE_PER_MIN", cls.write_per_minute),
@@ -354,6 +356,8 @@ class Settings:
             log.warning(
                 "NOTIFY_WEBHOOK_SECRET is not set; anyone who learns the webhook URL can send fake events to it"
             )
+        if settings.operator_bot_token is not None and len(settings.operator_bot_token) < MIN_ADMIN_SECRET_LENGTH:
+            log.warning("OPERATOR_BOT_TOKEN is shorter than %d characters; it is ignored", MIN_ADMIN_SECRET_LENGTH)
         if settings.admin_secret is not None and not settings.admin_enabled:
             log.warning(
                 "ADMIN_AUTH_SECRET is shorter than %d characters; admin API is disabled",

@@ -1,4 +1,4 @@
-"""Browse gateway (docs/decisions/0027, steps 2 and 6): reads web pages in the isolated browser for the service.
+"""Browse gateway (docs/decisions/0028, steps 2 and 6): reads web pages in the isolated browser for the service.
 
 Run with `python -m agent_helper.browse_gateway` from the browser image (it needs Playwright). It sits on two
 internal networks: the one it shares with the service (`browse-ctl`) and the browser's (`browse-inner`). It
