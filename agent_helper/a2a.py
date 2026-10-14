@@ -92,6 +92,7 @@ def agent_card(settings: Settings) -> dict[str, Any]:
             {"url": f"{base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
             # The same endpoint also answers A2A 0.3 clients (message/send, tasks/get, tasks/cancel).
             {"url": f"{base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"},
+            {"url": f"{base}/a2a", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"},
         ],
         "capabilities": {"streaming": False, "pushNotifications": False, "extendedAgentCard": False},
         "defaultInputModes": ["text/plain"],
@@ -150,6 +151,10 @@ def agent_card_v03(settings: Settings) -> dict[str, Any]:
         "description": card["description"],
         "url": f"{base}/a2a",
         "preferredTransport": "JSONRPC",
+        "additionalInterfaces": [
+            {"url": f"{base}/a2a", "transport": "JSONRPC"},
+            {"url": f"{base}/a2a", "transport": "HTTP+JSON"},
+        ],
         "version": card["version"],
         "provider": card["provider"],
         "documentationUrl": card["documentationUrl"],
@@ -416,6 +421,59 @@ class A2AEndpoint:
             result = to_v03_task(result["task"] if method == "SendMessage" else result)
         return JSONResponse({"jsonrpc": "2.0", "id": msg_id, "result": result}, headers={"Cache-Control": "no-store"})
 
+    async def handle_rest(self, request: Request, action: str, task_id: str | None = None) -> Response:
+        """The HTTP+JSON binding (docs/decisions/0028): POST .../v1/message:send, GET .../v1/tasks/{id},
+        POST .../v1/tasks/{id}:cancel. Same handlers, limits and token as JSON-RPC; A2A-Version 1.0 gets 1.0
+        shapes, a missing version (0.3) gets 0.3 shapes."""
+        origin = request.headers.get("origin")
+        if origin is not None and _origin(origin) != self.allowed_origin:
+            return _rest_error(INVALID_REQUEST, "origin not allowed")
+        version = (request.headers.get("a2a-version") or request.query_params.get("A2A-Version") or "").strip()
+        method = {"send": "SendMessage", "get": "GetTask", "cancel": "CancelTask"}[action]
+        if version != PROTOCOL_VERSION and version not in V03_VERSIONS:
+            self.usage.count(usage_module.refusal_metric("a2a", method, VERSION_NOT_SUPPORTED))
+            return _rest_error(VERSION_NOT_SUPPORTED, f"A2A version {version[:20]} is not supported; use 1.0")
+        v03 = version != PROTOCOL_VERSION
+        self.usage.count(f"a2a:rest:{method}" + (":0.3" if v03 else ""))
+        token = _bearer(request)
+        try:
+            if action == "send":
+                try:
+                    params = json.loads(await request.body())
+                except (ValueError, UnicodeError, RecursionError):
+                    raise A2AError(INVALID_PARAMS, "the body must be one JSON object") from None
+                if not isinstance(params, dict):
+                    raise A2AError(INVALID_PARAMS, "the body must be one JSON object")
+                if v03:
+                    params = {**params, "message": _from_v03_message(params.get("message"))}
+                result = await run_in_threadpool(self._send_message, request, params, token)
+                body: dict[str, Any] = to_v03_task(result["task"]) if v03 else result
+            elif action == "get":
+                raw = request.query_params.get("historyLength")
+                history = int(raw) if raw is not None and raw.isdigit() else None
+                if raw is not None and history is None:
+                    raise A2AError(INVALID_PARAMS, "historyLength must be a non-negative integer")
+                task = await run_in_threadpool(self._get_task, {"id": task_id, "historyLength": history}, token)
+                body = to_v03_task(task) if v03 else task
+            else:
+                task = await run_in_threadpool(self._cancel_task, request, {"id": task_id}, token)
+                body = to_v03_task(task) if v03 else task
+        except A2AError as exc:
+            self.usage.count(usage_module.refusal_metric("a2a", method, exc.code))
+            return _rest_error(exc.code, str(exc))
+        except HandleUnavailable as exc:
+            return _rest_error(INVALID_PARAMS, str(exc))
+        except RateLimited as exc:
+            retry = max(1, math.ceil(exc.wait))
+            self.usage.count(usage_module.refusal_metric("a2a", method, RATE_LIMITED))
+            response = JSONResponse(
+                {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "rate limit exceeded"}},
+                status_code=429,
+            )
+            response.headers["Retry-After"] = str(retry)
+            return response
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
     def _charge_write(self, request: Request) -> None:
         """Charge one write, after the call has been validated (the middleware counted the POST as a read)."""
         wait = self.write_limiter.take(client_key(request.scope, self.settings.trust_proxy_headers))
@@ -522,6 +580,24 @@ class A2AEndpoint:
         if view is None:
             raise A2AError(TASK_NOT_FOUND, "task not found or wrong token")
         return _task(view)
+
+
+# A2A errors in the HTTP+JSON (REST) binding: the HTTP status, and the A2A error by name.
+REST_ERRORS = {
+    INVALID_PARAMS: (400, "INVALID_PARAMS"),
+    TASK_NOT_FOUND: (404, "TASK_NOT_FOUND"),
+    TASK_NOT_CANCELABLE: (409, "TASK_NOT_CANCELABLE"),
+    PUSH_NOT_SUPPORTED: (400, "PUSH_NOTIFICATION_NOT_SUPPORTED"),
+    UNSUPPORTED_OPERATION: (400, "UNSUPPORTED_OPERATION"),
+    CONTENT_TYPE_NOT_SUPPORTED: (415, "CONTENT_TYPE_NOT_SUPPORTED"),
+    VERSION_NOT_SUPPORTED: (400, "VERSION_NOT_SUPPORTED"),
+}
+
+
+def _rest_error(code: int, message: str) -> JSONResponse:
+    status, reason = REST_ERRORS.get(code, (400, "INVALID_REQUEST"))
+    body = {"error": {"code": status, "status": reason, "message": message}}
+    return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 def _error(msg_id: Any, code: int, message: str, status: int = 200) -> JSONResponse:

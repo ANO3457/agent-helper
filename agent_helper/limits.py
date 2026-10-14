@@ -272,3 +272,25 @@ class GuardMiddleware:
             await self.app(scope, limited_receive, guarded_send)
         finally:
             done()
+
+
+class HeadAsGetMiddleware:
+    """Answer HEAD like GET without the body (RFC 9110, 9.3.2). The routes only declare GET; probes that
+    check a URL with HEAD otherwise got 405."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "HEAD":
+            await self.app(scope, receive, send)
+            return
+
+        async def without_body(message: Message) -> None:
+            if message["type"] == "http.response.body":
+                if message.get("more_body", False):
+                    return
+                message = {"type": "http.response.body", "body": b"", "more_body": False}
+            await send(message)
+
+        await self.app({**scope, "method": "GET"}, receive, without_body)
