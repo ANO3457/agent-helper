@@ -121,3 +121,27 @@ def test_aliases_and_new_paths_have_bounded_usage_names():
     assert endpoint_of(scope("/a2a/v1/tasks/req_abc"), 200) == "a2a:rest:tasks:get"
     assert endpoint_of(scope("/a2a/v1/tasks/req_abc:cancel", "POST"), 200) == "a2a:rest:tasks:post"
     assert endpoint_of(scope("/.well-known/x402"), 200) == "compat:payment"
+
+
+def test_rest_and_alias_posts_are_not_charged_twice(make_client):
+    client = make_client(write_per_minute=2, global_write_per_minute=2)
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": MODERN_META}}
+    headers = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+    for _ in range(5):  # reads through an alias cost no write budget
+        assert client.post("/sse", json=body, headers=headers).status_code == 200
+    for _ in range(2):  # two real writes fit the budget of two
+        r = client.post("/a2a/v1/message:send", json=user_message("hi"), headers={"A2A-Version": "1.0"})
+        assert r.status_code == 200, r.text
+    third = client.post("/a2a/v1/message:send", json=user_message("hi"), headers={"A2A-Version": "1.0"})
+    assert third.status_code == 429
+
+
+def test_rest_rejects_odd_input_without_crashing(client):
+    wrong = {"Authorization": "Bearer not-a-token", "A2A-Version": "1.0"}
+    for value in ("%C2%B2", "1" * 5000, "-1", "1.5"):
+        assert client.get(f"/a2a/v1/tasks/req_x?historyLength={value}", headers=wrong).status_code == 400
+    lone = rb'{"message": {"role": "ROLE_USER", "taskId": "\ud800", "parts": [{"text": "hi"}]}}'
+    r = client.post("/a2a/v1/message:send", content=lone, headers=wrong)
+    assert r.status_code == 400
+    long_id = client.get("/a2a/v1/tasks/" + "x" * 100, headers=wrong)
+    assert long_id.status_code == 400 and "error" in long_id.json()

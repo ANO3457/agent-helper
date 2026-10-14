@@ -170,6 +170,7 @@ class GuardMiddleware:
         trust_proxy_headers: bool,
         global_write_limiter: TokenBucket | None = None,
         self_limited_paths: frozenset[str] = frozenset(),
+        self_limited_prefixes: tuple[str, ...] = (),
         admin_networks: Networks | None = None,
         trusted_proxies: Networks = (),
         admin_port: int | None = None,
@@ -188,6 +189,7 @@ class GuardMiddleware:
         # Endpoints that tell reads from writes only after parsing the body (the MCP endpoint). They are
         # charged as reads here and charge writes themselves.
         self.self_limited_paths = self_limited_paths
+        self.self_limited_prefixes = self_limited_prefixes
 
     def _admin_refused(self, scope: Scope, is_admin_path: bool) -> bool:
         """With a separate admin port, /admin exists only there and nothing else does; which address the
@@ -222,7 +224,11 @@ class GuardMiddleware:
             done()
             return
 
-        is_read = method in READ_METHODS or scope["path"] in self.self_limited_paths
+        is_read = (
+            method in READ_METHODS
+            or scope["path"] in self.self_limited_paths
+            or scope["path"].startswith(self.self_limited_prefixes)
+        )
         limiter = self.read_limiter if is_read else self.write_limiter
         wait = limiter.take(client_key(scope, self.trust_proxy_headers))
         if wait == 0 and not is_read and self.global_write_limiter is not None:

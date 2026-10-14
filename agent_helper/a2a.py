@@ -440,6 +440,7 @@ class A2AEndpoint:
             if action == "send":
                 try:
                     params = json.loads(await request.body())
+                    json.dumps(params, ensure_ascii=False).encode("utf-8")  # rejects lone surrogates
                 except (ValueError, UnicodeError, RecursionError):
                     raise A2AError(INVALID_PARAMS, "the body must be one JSON object") from None
                 if not isinstance(params, dict):
@@ -450,7 +451,8 @@ class A2AEndpoint:
                 body: dict[str, Any] = to_v03_task(result["task"]) if v03 else result
             elif action == "get":
                 raw = request.query_params.get("historyLength")
-                history = int(raw) if raw is not None and raw.isdigit() else None
+                plain = raw is not None and raw.isascii() and raw.isdecimal() and len(raw) <= 9
+                history = int(raw) if plain else None  # type: ignore[arg-type]
                 if raw is not None and history is None:
                     raise A2AError(INVALID_PARAMS, "historyLength must be a non-negative integer")
                 task = await run_in_threadpool(self._get_task, {"id": task_id, "historyLength": history}, token)

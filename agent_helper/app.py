@@ -207,7 +207,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         write_limiter=write_limiter,
         global_write_limiter=global_write_limiter,
         trust_proxy_headers=settings.trust_proxy_headers,
-        self_limited_paths=frozenset({"/mcp", "/a2a"}),
+        # The MCP and A2A endpoints (and their aliases) charge writes themselves, after parsing the call.
+        self_limited_paths=frozenset(
+            {
+                "/mcp",
+                "/a2a",
+                *discovery.MCP_ALIASES,
+                "/a2a/v1/message:send",
+                "/.well-known/agent-card.json/v1/message:send",
+            }
+        ),
+        self_limited_prefixes=("/a2a/v1/tasks/",),
         admin_networks=parse_networks(settings.admin_allowed_nets),
         trusted_proxies=parse_networks(settings.trusted_proxies) or (),
         admin_port=settings.admin_port,
@@ -445,11 +455,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_api_route(path, a2a_rest_send, methods=["POST"], include_in_schema=False)
 
     @app.get("/a2a/v1/tasks/{task_id}", include_in_schema=False)
-    async def a2a_rest_get(request: Request, task_id: Annotated[str, Path(max_length=64)]) -> Response:
+    async def a2a_rest_get(request: Request, task_id: str) -> Response:
         return await a2a.handle_rest(request, "get", task_id)
 
     @app.post("/a2a/v1/tasks/{task_id}:cancel", include_in_schema=False)
-    async def a2a_rest_cancel(request: Request, task_id: Annotated[str, Path(max_length=64)]) -> Response:
+    async def a2a_rest_cancel(request: Request, task_id: str) -> Response:
         return await a2a.handle_rest(request, "cancel", task_id)
 
     @v1.get("/capabilities/{cap_id}", tags=["capabilities"])
