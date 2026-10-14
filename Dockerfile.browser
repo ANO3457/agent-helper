@@ -1,4 +1,4 @@
-# The isolated browser for the web page reader (docs/decisions/0028). One image for two containers: the
+# The isolated browser for the web page reader (docs/decisions/0029). One image for two containers: the
 # Camoufox browser server (`python -m agent_helper.browser_server`) and the browse gateway
 # (`python -m agent_helper.browse_gateway`), so the Playwright client and server always match.
 # Base image pinned by digest, as in the service's Dockerfile.

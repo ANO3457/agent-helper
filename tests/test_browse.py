@@ -1,4 +1,4 @@
-"""The web page reader, service side (docs/decisions/0028): URL rules, budgets, and the three entry points."""
+"""The web page reader, service side (docs/decisions/0029): URL rules, budgets, and the three entry points."""
 
 import pytest
 from test_a2a import rpc, user_message

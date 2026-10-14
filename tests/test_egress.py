@@ -1,4 +1,4 @@
-"""The egress proxy of the web page reader (docs/decisions/0028, step 3)."""
+"""The egress proxy of the web page reader (docs/decisions/0029, step 3)."""
 
 import ipaddress
 import socket

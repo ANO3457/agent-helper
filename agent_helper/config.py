@@ -106,7 +106,7 @@ def _browse_mode(raw: str | None) -> str:
 
 
 def _gateway_url(raw: str | None) -> str | None:
-    """The browse gateway on the internal network (docs/decisions/0028): http(s), a host, nothing else."""
+    """The browse gateway on the internal network (docs/decisions/0029): http(s), a host, nothing else."""
     if not raw:
         return None
     try:
@@ -276,7 +276,7 @@ class Settings:
 
     @property
     def browse_enabled(self) -> bool:
-        """The web page reader needs the switch, a gateway and its secret (docs/decisions/0028, step 1)."""
+        """The web page reader needs the switch, a gateway and its secret (docs/decisions/0029, step 1)."""
         return (
             self.browse_mode == "on"
             and self.browse_gateway_url is not None

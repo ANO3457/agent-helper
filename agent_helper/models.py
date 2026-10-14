@@ -346,7 +346,7 @@ class PushIn(BaseModel):
 
 
 class WebPageIn(BaseModel):
-    """A page to read (docs/decisions/0028). The URL rules are checked by the reader itself."""
+    """A page to read (docs/decisions/0029). The URL rules are checked by the reader itself."""
 
     url: Annotated[str, Field(min_length=1, max_length=2048)]
     format: Literal["text", "markdown", "screenshot"] = "text"

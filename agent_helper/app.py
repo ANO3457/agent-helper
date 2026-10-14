@@ -214,7 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin_port=settings.admin_port,
         usage=usage,
     )
-    # The web page reader exists only when the operator turned it on (docs/decisions/0028, step 1).
+    # The web page reader exists only when the operator turned it on (docs/decisions/0029, step 1).
     browser = Browser.from_settings(settings, usage.count) if settings.browse_enabled else None
     app.state.browser = browser
     built_in = [PUSH_CAPABILITY] if settings.push_enabled else []

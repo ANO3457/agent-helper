@@ -195,7 +195,7 @@ URL. The relay logs the same without URLs; if a host owner asks to be blocked fo
 
 ## Web page reader
 
-Off by default ([decision 0028](decisions/0028-web-page-reader.md)). It needs three more containers, all
+Off by default ([decision 0029](decisions/0029-web-page-reader.md)). It needs three more containers, all
 from this repository (example: `docker-compose.browse.example.yml`, settings in
 `config/browse.env.example`):
 

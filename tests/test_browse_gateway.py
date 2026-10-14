@@ -1,4 +1,4 @@
-"""The browse gateway (docs/decisions/0028, step 6), with a fake browser driver."""
+"""The browse gateway (docs/decisions/0029, step 6), with a fake browser driver."""
 
 import asyncio
 import json

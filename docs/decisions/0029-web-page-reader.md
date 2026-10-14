@@ -1,4 +1,4 @@
-# 0028: A web page reader in an isolated browser (security design)
+# 0029: A web page reader in an isolated browser (security design)
 
 - Status: proposed (off by default; the operator turns it on)
 - Date: 2026-10-14

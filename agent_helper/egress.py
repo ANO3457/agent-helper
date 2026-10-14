@@ -1,4 +1,4 @@
-"""Filtering forward proxy for the web page reader (docs/decisions/0028, step 3).
+"""Filtering forward proxy for the web page reader (docs/decisions/0029, step 3).
 
 Run with `python -m agent_helper.egress`. The browser sits on an internal network whose only way out is this
 proxy. For every `CONNECT host:port` and every plain `GET http://host/...` it resolves the name itself,

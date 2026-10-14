@@ -1,4 +1,4 @@
-"""The web page reader, service side (docs/decisions/0028).
+"""The web page reader, service side (docs/decisions/0029).
 
 The service checks what it can without the network (`check_url`), charges the budgets (`Budget`), and hands a
 signed job to the browse gateway (`GatewayClient`). It never talks to the browser itself and is not on the
@@ -59,7 +59,7 @@ class Target:
 
 
 def check_url(url: Any, deny_domains: tuple[str, ...] = (), own_hosts: tuple[str, ...] = ()) -> Target:
-    """The rules of 0028 step 4 that need no network. Raises BrowseRefused('refused', ...)."""
+    """The rules of 0029 step 4 that need no network. Raises BrowseRefused('refused', ...)."""
     if not isinstance(url, str) or not url or len(url) > MAX_URL_LENGTH:
         raise BrowseRefused("refused", f"url must be a string of at most {MAX_URL_LENGTH} characters")
     if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
@@ -104,7 +104,7 @@ def check_url(url: Any, deny_domains: tuple[str, ...] = (), own_hosts: tuple[str
 
 
 class Budget:
-    """Per client per minute and per day, per target site per minute, everyone per day (0028 step 5).
+    """Per client per minute and per day, per target site per minute, everyone per day (0029 step 5).
     In memory: a restart resets it."""
 
     def __init__(
@@ -150,7 +150,7 @@ class Budget:
 
 
 class GatewayClient:
-    """Signed calls to the browse gateway over the internal network (0028 step 6)."""
+    """Signed calls to the browse gateway over the internal network (0029 step 6)."""
 
     def __init__(self, base_url: str, secret: str, timeout: float) -> None:
         parts = urlsplit(base_url)

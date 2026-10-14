@@ -533,7 +533,7 @@ class A2AEndpoint:
         return {"task": task}
 
     def _read_web_page(self, request: Request, meta: dict[str, Any], text: str) -> dict[str, Any]:
-        """The read-web-page skill (docs/decisions/0028): answered with a direct message, nothing is stored."""
+        """The read-web-page skill (docs/decisions/0029): answered with a direct message, nothing is stored."""
         url = _metadata_str(meta, "url") or text.strip()
         fmt = _metadata_str(meta, "format") or "text"
         if fmt not in ("text", "markdown"):
