@@ -70,3 +70,24 @@ def test_bot_token_works_only_where_the_admin_api_is(make_client):
     client = make_client(operator_bot_token=BOT, admin_port=8081)
     # The test client reaches the app on the public port: /admin does not exist there.
     assert client.get("/admin/v1/requests", headers=bot()).status_code == 404
+
+
+def test_bot_reads_are_logged_without_content(bot_client, caplog):
+    created = bot_client.post("/v1/requests", json={"message": "secret-ish content"}).json()
+    with caplog.at_level(logging.INFO, logger="agent_helper.audit"):
+        bot_client.get("/admin/v1/requests?status=open", headers=bot())
+        bot_client.get(f"/admin/v1/requests/{created['id']}", headers=bot())
+    assert "operator listed 1 request(s) (open) via telegram" in caplog.text
+    assert f"operator read {created['id']} via telegram" in caplog.text
+    assert "secret-ish" not in caplog.text
+
+
+def test_a_bot_token_equal_to_the_admin_secret_is_ignored(make_client, caplog):
+    from conftest import ADMIN_SECRET
+
+    with caplog.at_level(logging.ERROR):
+        client = make_client(operator_bot_token=ADMIN_SECRET)
+    assert "OPERATOR_BOT_TOKEN equals ADMIN_AUTH_SECRET" in caplog.text
+    # The admin secret keeps working, with full rights, and the console stays reachable.
+    assert client.get("/admin/v1/reports", headers=bot(ADMIN_SECRET)).status_code == 200
+    assert client.get("/admin/login").status_code == 200

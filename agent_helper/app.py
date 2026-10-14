@@ -785,8 +785,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- operator API ---------------------------------------------------------------------------
 
+    audit = logging.getLogger("agent_helper.audit")
     bot_token = settings.operator_bot_token or ""
     bot_enabled = len(bot_token) >= MIN_ADMIN_SECRET_LENGTH
+    if bot_enabled and settings.admin_secret is not None and hmac.compare_digest(bot_token, settings.admin_secret):
+        # The bot token must be weaker than the admin secret, never the same: ignore it rather than refuse to
+        # start, so the operator keeps the console.
+        logging.getLogger("agent_helper").error(
+            "OPERATOR_BOT_TOKEN equals ADMIN_AUTH_SECRET; the bot token is ignored. Give the bot its own token."
+        )
+        bot_enabled = False
     # What the chat bot's token may do (docs/decisions/0027): list and read requests, and answer them.
     bot_routes = frozenset(
         {
@@ -815,15 +823,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @admin.get("/requests")
     def admin_requests(
-        status: RequestStatus | None = None, limit: Annotated[int, Query(ge=1, le=500)] = 100
+        request: Request, status: RequestStatus | None = None, limit: Annotated[int, Query(ge=1, le=500)] = 100
     ) -> list[RequestOut]:
-        return [RequestOut(**r) for r in store.list_requests(status, limit)]
+        found = [RequestOut(**r) for r in store.list_requests(status, limit)]
+        if getattr(request.state, "via", None):
+            audit.info("operator listed %d request(s) (%s) via %s", len(found), status or "any", request.state.via)
+        return found
 
     @admin.get("/requests/{req_id}")
-    def admin_get_request(req_id: str) -> RequestOut:
+    def admin_get_request(req_id: str, request: Request) -> RequestOut:
         found = store.get_request_admin(req_id)
         if found is None:
             raise HTTPException(404, "no such request")
+        if getattr(request.state, "via", None):
+            audit.info("operator read %s via %s", req_id, request.state.via)
         return RequestOut(**found)
 
     @admin.post("/requests/{req_id}/replies")
@@ -832,7 +845,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if found is None:
             raise HTTPException(404, "no such request")
         via = getattr(request.state, "via", "admin API")
-        logging.getLogger("agent_helper.audit").info("operator reply to %s (%s) via %s", req_id, body.status, via)
+        audit.info("operator reply to %s (%s) via %s", req_id, body.status, via)
         return RequestOut(**found)
 
     @admin.post("/requests/{req_id}/referrals")

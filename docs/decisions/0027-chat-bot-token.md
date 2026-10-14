@@ -22,8 +22,11 @@ change the catalog.
    - `POST /admin/v1/requests/{id}/replies` with `{"message": "...", "status": "answered" | "closed"}`.
 2. It is compared in constant time and works only where the operator API is served: on `ADMIN_PORT`, or
    from `ADMIN_ALLOWED_NETS` without one. It is never accepted on the public port.
-3. Replies made with it are logged as `operator reply to <id> (<status>) via telegram`; replies through
-   the admin secret as `via admin API`. The answer reaches the agent exactly like any operator reply.
+3. Everything done with it is logged without content: `operator listed <n> request(s) (<status>) via
+   telegram`, `operator read <id> via telegram`, `operator reply to <id> (<status>) via telegram`
+   (replies through the admin secret as `via admin API`). The answer reaches the agent exactly like any
+   operator reply. A bot token equal to the admin secret is ignored with an error in the log; the service
+   still starts, so the console stays reachable.
 4. The chat side is configured in the automation tool, not in this repository: forward `request.created`
    and `request.message` webhook events (0012) after fetching the text with `GET /admin/v1/requests/{id}`,
    send agent text as plain text without a parse mode and marked as coming from an agent, accept commands
