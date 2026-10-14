@@ -231,7 +231,7 @@ def rewrite_head(head: bytes) -> tuple[str, int, bytes, int]:
     host, port = parse_authority(parts.netloc, 80)
     path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
     out = [f"{method} {path} {version}".encode("ascii")]
-    length = 0
+    length, seen_length = 0, False
     for line in lines[1:]:
         name, sep, value = line.partition(b":")
         name = name.strip().lower()
@@ -241,8 +241,10 @@ def rewrite_head(head: bytes) -> tuple[str, int, bytes, int]:
             raise ValueError("chunked request bodies are not supported")
         if name == b"content-length":
             text = value.strip()
-            if not text.isdigit() or (length and int(text) != length):
+            # Exactly one plain decimal length: two headers, even equal ones, are how request smuggling starts.
+            if seen_length or not text.isascii() or not text.isdigit():
                 raise ValueError("bad content length")
+            seen_length = True
             length = int(text)
         if name in DROPPED_HEADERS:
             continue
