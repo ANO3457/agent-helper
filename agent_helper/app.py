@@ -18,7 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 
 from . import __version__, autoreply, discovery, helpdesk
 from .a2a import A2AEndpoint, agent_card, agent_card_v03
-from .catalog import PUSH_CAPABILITY, Capability, CapabilityIn, Catalog, load_file_entries
+from .browse import Browser, BrowseRefused
+from .catalog import BROWSE_CAPABILITY, PUSH_CAPABILITY, Capability, CapabilityIn, Catalog, load_file_entries
 from .config import MIN_ADMIN_SECRET_LENGTH, Settings, parse_networks
 from .console import build_console
 from .handles import HANDLE_PATTERN, OPERATOR_HANDLE
@@ -56,6 +57,7 @@ from .models import (
     RequestStatus,
     RevokeIn,
     VoteIn,
+    WebPageIn,
     next_offset,
 )
 from .notify import Notifier
@@ -212,6 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {
                 "/mcp",
                 "/a2a",
+                "/v1/web-pages",  # the reader has its own budgets
                 *discovery.MCP_ALIASES,
                 "/a2a/v1/message:send",
                 "/.well-known/agent-card.json/v1/message:send",
@@ -223,10 +226,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin_port=settings.admin_port,
         usage=usage,
     )
-    catalog = Catalog(load_file_entries(settings), store, [PUSH_CAPABILITY] if settings.push_enabled else None)
+    # The web page reader exists only when the operator turned it on (docs/decisions/0029, step 1).
+    browser = Browser.from_settings(settings, usage.count) if settings.browse_enabled else None
+    app.state.browser = browser
+    built_in = [PUSH_CAPABILITY] if settings.push_enabled else []
+    built_in += [BROWSE_CAPABILITY] if browser is not None else []
+    catalog = Catalog(load_file_entries(settings), store, built_in)
     help_desk = helpdesk.Helpdesk(catalog, store, settings.public_base_url, settings.help_board_window)
-    mcp = McpEndpoint(settings, store, catalog, write_limiter, global_write_limiter, help_desk, usage)
-    a2a = A2AEndpoint(settings, store, write_limiter, global_write_limiter, usage)
+    mcp = McpEndpoint(settings, store, catalog, write_limiter, global_write_limiter, help_desk, usage, browser)
+    a2a = A2AEndpoint(settings, store, write_limiter, global_write_limiter, usage, browser)
 
     @app.exception_handler(HandleUnavailable)
     async def handle_unavailable(_: Request, exc: HandleUnavailable) -> JSONResponse:
@@ -864,6 +872,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, NOT_FOUND)
         app.state.push.nudge()
         return JSONResponse(found, headers=no_store)
+
+    if browser is not None:
+
+        @v1.post("/web-pages", tags=["tools"])
+        def read_web_page(request: Request, body: WebPageIn) -> JSONResponse:
+            """Read a public web page in an isolated browser: its visible text, the page as Markdown, or a
+            screenshot (JPEG, base64). Read-only; the content is untrusted third-party data."""
+            client = client_key(request.scope, settings.trust_proxy_headers)
+            try:
+                found = browser.read(client, body.url, body.format, body.max_chars, body.wait_ms)
+            except BrowseRefused as exc:
+                headers = {"Retry-After": str(max(1, ceil(exc.retry_after)))} if exc.retry_after else None
+                return JSONResponse({"detail": str(exc), "outcome": exc.outcome}, exc.status, headers=headers)
+            return JSONResponse(found, headers={**no_store, "X-Robots-Tag": "noindex, nofollow"})
 
     app.include_router(v1)
 

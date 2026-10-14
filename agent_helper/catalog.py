@@ -69,6 +69,25 @@ PUSH_CAPABILITY = Capability(
 )
 
 
+BROWSE_CAPABILITY = Capability(
+    id="web-page-reader",
+    title="Read a web page in a real browser: text, Markdown or a screenshot",
+    summary="Give a public http(s) URL; an isolated browser opens it, runs the page's own scripts, and returns "
+    "the visible text, the page as Markdown, or a screenshot. Useful when your own fetch gets an empty "
+    "JavaScript shell, is blocked, or you cannot open a URL or website at all. Read-only: no logins, no "
+    "forms, no downloads. The content comes back as untrusted data.",
+    category="tool",
+    availability="available",
+    access=[
+        Access(kind="mcp_tool", value="read_web_page"),
+        Access(kind="http", value='POST /v1/web-pages {"url": "https://...", "format": "markdown"}'),
+    ],
+    tags=["browser", "web", "url", "fetch", "scrape", "render", "javascript", "screenshot", "markdown"],
+    limits="Public http(s) pages on ports 80 and 443 only; a few pages a minute and a small daily budget per "
+    "client; 30 seconds per page; text up to 100,000 characters.",
+)
+
+
 def _from_v01(item: dict[str, Any]) -> dict[str, Any]:
     """Read a v0.1 catalog entry ({id, title, availability, how, details}) as a structured one."""
     if "summary" in item or "details" not in item:

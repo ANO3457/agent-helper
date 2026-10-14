@@ -28,6 +28,7 @@ DEFAULT_NOTIFY_EVENTS = frozenset(
 )
 
 PUSH_MODES = ("off", "public", "allowlist")
+BROWSE_MODES = ("off", "on")
 
 log = logging.getLogger("agent_helper")
 
@@ -94,6 +95,30 @@ def _push_mode(raw: str | None) -> str:
         log.warning("PUSH_MODE must be one of %s; push notifications are disabled", ", ".join(PUSH_MODES))
         return "off"
     return mode
+
+
+def _browse_mode(raw: str | None) -> str:
+    mode = (raw or "off").strip().lower()
+    if mode not in BROWSE_MODES:
+        log.warning("BROWSE_MODE must be 'off' or 'on'; the web page reader is off")
+        return "off"
+    return mode
+
+
+def _gateway_url(raw: str | None) -> str | None:
+    """The browse gateway on the internal network (docs/decisions/0029): http(s), a host, nothing else."""
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+        parts.port  # noqa: B018 (raises ValueError for a bad port)
+    except ValueError:
+        parts = None
+    bad = any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in raw)
+    if parts is None or parts.scheme not in ("http", "https") or not parts.hostname or bad or parts.query:
+        log.warning("BROWSE_GATEWAY_URL must be an http(s) URL with a host; the web page reader is off")
+        return None
+    return raw.rstrip("/")
 
 
 def _key_ids(raw: str) -> tuple[tuple[str, str | None], ...]:
@@ -221,6 +246,16 @@ class Settings:
     auto_reply_checks: bool = True
     indexnow_key: str | None = None
     usage_retention_days: int = 400
+    browse_mode: str = "off"
+    browse_gateway_url: str | None = None
+    browse_secret: str | None = None
+    browse_timeout: float = 30.0
+    browse_per_minute: int = 3
+    browse_per_day: int = 30
+    browse_per_domain_per_minute: int = 6
+    browse_global_per_day: int = 300
+    browse_concurrency: int = 2
+    browse_deny_domains: str = ""
 
     @property
     def db_path(self) -> Path:
@@ -238,6 +273,16 @@ class Settings:
             and self.relay_url is not None
             and self.relay_secret is not None
             and len(self.relay_secret) >= MIN_ADMIN_SECRET_LENGTH
+        )
+
+    @property
+    def browse_enabled(self) -> bool:
+        """The web page reader needs the switch, a gateway and its secret (docs/decisions/0029, step 1)."""
+        return (
+            self.browse_mode == "on"
+            and self.browse_gateway_url is not None
+            and self.browse_secret is not None
+            and len(self.browse_secret) >= MIN_ADMIN_SECRET_LENGTH
         )
 
     @classmethod
@@ -286,7 +331,23 @@ class Settings:
             relay_url=_relay_url(os.environ.get("RELAY_URL")),
             relay_secret=os.environ.get("RELAY_SECRET") or None,
             relay_ca_file=Path(os.environ["RELAY_CA_FILE"]) if os.environ.get("RELAY_CA_FILE") else None,
+            browse_mode=_browse_mode(os.environ.get("BROWSE_MODE")),
+            browse_gateway_url=_gateway_url(os.environ.get("BROWSE_GATEWAY_URL")),
+            browse_secret=os.environ.get("BROWSE_SECRET") or None,
+            browse_timeout=float(os.environ.get("BROWSE_TIMEOUT_SECONDS") or cls.browse_timeout),
+            browse_per_minute=_int("BROWSE_PER_MINUTE", cls.browse_per_minute),
+            browse_per_day=_int("BROWSE_PER_DAY", cls.browse_per_day),
+            browse_per_domain_per_minute=_int("BROWSE_PER_DOMAIN_PER_MINUTE", cls.browse_per_domain_per_minute),
+            browse_global_per_day=_int("BROWSE_GLOBAL_PER_DAY", cls.browse_global_per_day),
+            browse_concurrency=_int("BROWSE_CONCURRENCY", cls.browse_concurrency),
+            browse_deny_domains=os.environ.get("BROWSE_DENY_DOMAINS", ""),
         )
+        if settings.browse_mode == "on" and not settings.browse_enabled:
+            log.warning(
+                "BROWSE_MODE is on, but BROWSE_GATEWAY_URL or BROWSE_SECRET (at least %d characters) is missing; "
+                "the web page reader is off",
+                MIN_ADMIN_SECRET_LENGTH,
+            )
         if settings.push_mode != "off" and not settings.push_enabled:
             log.warning(
                 "PUSH_MODE is on, but RELAY_URL or RELAY_SECRET (at least %d characters) is missing; "

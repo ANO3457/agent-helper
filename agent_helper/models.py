@@ -345,5 +345,14 @@ class PushIn(BaseModel):
     )
 
 
+class WebPageIn(BaseModel):
+    """A page to read (docs/decisions/0029). The URL rules are checked by the reader itself."""
+
+    url: Annotated[str, Field(min_length=1, max_length=2048)]
+    format: Literal["text", "markdown", "screenshot"] = "text"
+    max_chars: Annotated[int, Field(ge=100, le=100_000)] = 20_000
+    wait_ms: Annotated[int, Field(ge=0, le=5_000)] = 0
+
+
 class PushVerifyIn(BaseModel):
     code: Annotated[str, Field(min_length=1, max_length=64)]

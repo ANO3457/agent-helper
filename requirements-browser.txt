@@ -1,0 +1,8 @@
+# Input for requirements-browser.lock (Dockerfile.browser, docs/decisions/0029). Regenerate with:
+#   uv pip compile requirements-browser.txt --constraint requirements.lock --universal --python-version 3.12 \n#     --generate-hashes --only-binary :all: -o requirements-browser.lock
+# Camoufox requires playwright<1.63; the browser build it pairs with is pinned in Dockerfile.browser.
+camoufox==0.5.8
+playwright==1.62.0
+fastapi
+uvicorn
+cryptography
