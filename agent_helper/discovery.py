@@ -434,3 +434,62 @@ NO_OAUTH = {
     "tokens it hands out (follow_up_token, handle_token) are sent as 'Authorization: Bearer <token>'. "
     "See /llms.txt."
 }
+
+
+# --- more fixed paths that agents and tools try (docs/decisions/0028) -----------------------------------
+
+OAUTH_PATHS = (
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-authorization-server/mcp",
+    "/.well-known/openid-configuration",
+    "/.well-known/openid-configuration/mcp",
+)
+INDEX_PATHS = (
+    "/.well-known/ard.json",
+    "/.well-known/agent-directory.json",
+    "/.well-known/ai-catalog.json",
+)
+PAYMENT_PATHS = (
+    "/.well-known/x402",
+    "/.well-known/x402.json",
+    "/.well-known/payment-manifest.json",
+    "/.well-known/mpp.json",
+)
+# URLs clients try for the MCP endpoint: older SSE paths, common prefixes, and the endpoint appended to a
+# discovery file's URL.
+MCP_ALIASES = (
+    "/mcp/sse",
+    "/sse",
+    "/api/mcp",
+    "/mcp/mcp",
+    "/a2a/mcp",
+    "/llms.txt/mcp",
+    "/.well-known/agent-card.json/mcp",
+    "/.well-known/agent-helper.json/mcp",
+    "/.well-known/mcp.json/mcp",
+    "/.well-known/mcp/server-card.json/mcp",
+)
+
+
+def payment_info(settings: Settings) -> dict[str, Any]:
+    return {
+        "payment_required": False,
+        "price": "free",
+        "note": "This service is free to use. No payment, wallet or account is needed; nothing here accepts payments.",
+        "start": f"GET {settings.public_base_url}/v1/help?need=<a few words>",
+    }
+
+
+def a2a_info(settings: Settings) -> dict[str, Any]:
+    base = settings.public_base_url
+    return {
+        "name": "agent-helper",
+        "protocol": "A2A",
+        "how": "POST JSON-RPC 2.0 to this URL (A2A 1.0 with header A2A-Version: 1.0, or A2A 0.3 without it), or "
+        "use the HTTP+JSON binding: POST /a2a/v1/message:send, GET /a2a/v1/tasks/{id}.",
+        "agent_card": f"{base}/.well-known/agent-card.json",
+        "agent_card_v0_3": f"{base}/.well-known/agent.json",
+        "docs": f"{base}/llms.txt",
+    }

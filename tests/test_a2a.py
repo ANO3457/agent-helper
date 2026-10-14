@@ -37,6 +37,7 @@ def test_agent_card(client):
     assert card["supportedInterfaces"] == [
         {"url": "http://testserver/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
         {"url": "http://testserver/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"},
+        {"url": "http://testserver/a2a", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"},
     ]
     assert card["capabilities"]["streaming"] is False and card["capabilities"]["pushNotifications"] is False
     assert "followUpToken" in card["securitySchemes"]

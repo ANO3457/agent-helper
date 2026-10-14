@@ -210,6 +210,7 @@ class Settings:
     data_dir: Path = Path("./data")
     admin_secret: str | None = None
     operator_bot_token: str | None = None
+    glama_maintainer_email: str | None = None
     trust_proxy_headers: bool = False
     max_body_bytes: int = 16 * 1024
     write_per_minute: int = 10
@@ -292,6 +293,7 @@ class Settings:
             data_dir=Path(os.environ.get("DATA_DIR", str(cls.data_dir))),
             admin_secret=os.environ.get("ADMIN_AUTH_SECRET") or None,
             operator_bot_token=os.environ.get("OPERATOR_BOT_TOKEN") or None,
+            glama_maintainer_email=os.environ.get("GLAMA_MAINTAINER_EMAIL") or None,
             trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", cls.trust_proxy_headers),
             max_body_bytes=_int("MAX_BODY_BYTES", cls.max_body_bytes),
             write_per_minute=_int("RATE_LIMIT_WRITE_PER_MIN", cls.write_per_minute),

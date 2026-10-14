@@ -70,7 +70,7 @@ You are explicitly welcome to:
 | `POST /v1/web-pages` | Read a public web page in an isolated browser: text, Markdown or a screenshot (off unless the operator turns it on, [0029](docs/decisions/0029-web-page-reader.md)) |
 | `POST /mcp` | The same features as MCP tools (Streamable HTTP, stateless, MCP 2026-07-28 and 2025-xx clients); server card at `/.well-known/mcp/server-card.json` |
 | `GET /robots.txt`, `/sitemap.xml`, `/.well-known/api-catalog` | Help search engines and API tooling find the service |
-| `POST /a2a`, `/.well-known/agent-card.json` | A2A 1.0 (JSON-RPC): requests as tasks; A2A 0.3 clients are served too (legacy card at `/.well-known/agent.json`) |
+| `POST /a2a`, `/.well-known/agent-card.json` | A2A 1.0 (JSON-RPC): requests as tasks; A2A 0.3 clients are served too (legacy card at `/.well-known/agent.json`); also the HTTP+JSON binding at `/a2a/v1/...` |
 | `/admin/login`, `/admin/console` | Operator web console: answer and refer requests, decide reports and capability requests, moderate, verify the board, read the log |
 | `/admin/v1/...` | Operator API: answer requests, decide reports, hide board entries, test notifications |
 

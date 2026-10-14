@@ -23,7 +23,7 @@ from .catalog import BROWSE_CAPABILITY, PUSH_CAPABILITY, Capability, CapabilityI
 from .config import MIN_ADMIN_SECRET_LENGTH, Settings, parse_networks
 from .console import build_console
 from .handles import HANDLE_PATTERN, OPERATOR_HANDLE
-from .limits import GuardMiddleware, TokenBucket, client_key
+from .limits import GuardMiddleware, HeadAsGetMiddleware, TokenBucket, client_key
 from .mcp import McpEndpoint
 from .models import (
     MAX_ID,
@@ -201,6 +201,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.flush_usage = flush_usage
     write_limiter = TokenBucket(settings.write_per_minute)
     global_write_limiter = TokenBucket(settings.global_write_per_minute)
+    app.add_middleware(HeadAsGetMiddleware)
     app.add_middleware(
         GuardMiddleware,
         max_body_bytes=settings.max_body_bytes,
@@ -208,7 +209,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         write_limiter=write_limiter,
         global_write_limiter=global_write_limiter,
         trust_proxy_headers=settings.trust_proxy_headers,
-        self_limited_paths=frozenset({"/mcp", "/a2a", "/v1/web-pages"}),  # the reader has its own budgets
+        # The MCP and A2A endpoints (and their aliases) charge writes themselves, after parsing the call.
+        self_limited_paths=frozenset(
+            {
+                "/mcp",
+                "/a2a",
+                "/v1/web-pages",  # the reader has its own budgets
+                *discovery.MCP_ALIASES,
+                "/a2a/v1/message:send",
+                "/.well-known/agent-card.json/v1/message:send",
+            }
+        ),
+        self_limited_prefixes=("/a2a/v1/tasks/",),
         admin_networks=parse_networks(settings.admin_allowed_nets),
         trusted_proxies=parse_networks(settings.trusted_proxies) or (),
         admin_port=settings.admin_port,
@@ -305,10 +317,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def mcp_endpoint(request: Request) -> Response:
         return await mcp.handle(request)
 
-    @app.api_route("/mcp", methods=["GET", "DELETE"], include_in_schema=False)
-    def mcp_no_stream() -> Response:
-        # This endpoint offers no standalone SSE stream and no sessions (MCP 2026-07-28, legacy compatible).
-        return Response(status_code=405, headers={"Allow": "POST"})
+    def mcp_other_methods(request: Request) -> Response:
+        """No standalone SSE stream and no sessions here (MCP 2026-07-28, legacy compatible). A client that
+        asks for an event stream gets 405, as the transport requires; anyone else gets a short description."""
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers={"Allow": "GET, POST, OPTIONS"})
+        if request.method == "DELETE" or "text/event-stream" in request.headers.get("accept", ""):
+            return Response(status_code=405, headers={"Allow": "POST"})
+        return JSONResponse(mcp.endpoint_info(), headers={"Allow": "GET, POST, OPTIONS"})
+
+    async def mcp_post(request: Request) -> Response:
+        return await mcp.handle(request)
+
+    # The MCP endpoint, and the other URLs clients try for it (docs/decisions/0028).
+    for path in ("/mcp", *discovery.MCP_ALIASES):
+        if path != "/mcp":
+            app.add_api_route(path, mcp_post, methods=["POST"], include_in_schema=False)
+        app.add_api_route(path, mcp_other_methods, methods=["GET", "DELETE", "OPTIONS"], include_in_schema=False)
 
     @app.get("/.well-known/agent-helper.json", tags=["discovery"])
     def well_known() -> dict[str, Any]:
@@ -376,14 +401,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def llms_alias() -> PlainTextResponse:
         return PlainTextResponse(discovery.llms_txt(settings, store.instance), headers=link_header)
 
-    @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
-    @app.get("/.well-known/oauth-protected-resource/{rest:path}", include_in_schema=False)
-    @app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
-    @app.get("/.well-known/openid-configuration", include_in_schema=False)
-    def no_oauth(rest: str = "") -> JSONResponse:
-        # Still a 404: that is what tells OAuth-aware MCP clients that no authorization is needed. The body
-        # says so in words for agents that read it.
+    def no_oauth() -> JSONResponse:
+        # Still a 404: that is what tells OAuth-aware MCP clients that no authorization is needed (RFC 9728
+        # metadata is only looked up for a protected resource). The body says so in words for agents.
         return JSONResponse(discovery.NO_OAUTH, status_code=404, headers=public)
+
+    for path in discovery.OAUTH_PATHS:
+        app.add_api_route(path, no_oauth, methods=["GET"], include_in_schema=False)
+
+    # --- more files agents and tools look for (docs/decisions/0028); fixed paths only ----------------------
+    def server_card_alias() -> JSONResponse:
+        return JSONResponse(mcp.server_card(), headers=public)
+
+    for path in ("/mcp/server-card", "/mcp/server-card.json", "/.well-known/mcp"):
+        app.add_api_route(path, server_card_alias, methods=["GET"], include_in_schema=False)
+
+    def index_alias() -> JSONResponse:
+        return JSONResponse(discovery.discovery_index(settings), headers=public)
+
+    for path in discovery.INDEX_PATHS:
+        app.add_api_route(path, index_alias, methods=["GET"], include_in_schema=False)
+
+    def payment_info() -> JSONResponse:
+        return JSONResponse(discovery.payment_info(settings), headers=public)
+
+    for path in discovery.PAYMENT_PATHS:
+        app.add_api_route(path, payment_info, methods=["GET"], include_in_schema=False)
+
+    @app.get("/.well-known/glama.json", include_in_schema=False)
+    def glama() -> JSONResponse:
+        # Glama's ownership check for listed MCP servers; only with an operator-chosen maintainer address.
+        if not settings.glama_maintainer_email:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        body = {
+            "$schema": "https://glama.ai/mcp/schemas/connector.json",
+            "maintainers": [{"email": settings.glama_maintainer_email}],
+        }
+        return JSONResponse(body, headers=public)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        return Response(status_code=204, headers={"Cache-Control": "public, max-age=86400"})
+
+    # --- A2A: info, health, card next to the endpoint, HTTP+JSON binding (docs/decisions/0028) ------------
+    @app.get("/a2a", include_in_schema=False)
+    def a2a_info() -> JSONResponse:
+        return JSONResponse(discovery.a2a_info(settings))
+
+    @app.get("/a2a/health", include_in_schema=False)
+    def a2a_health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/a2a/.well-known/agent-card.json", include_in_schema=False)
+    def a2a_card_next_to_endpoint() -> JSONResponse:
+        return JSONResponse(agent_card(settings), headers=public)
+
+    async def a2a_rest_send(request: Request) -> Response:
+        return await a2a.handle_rest(request, "send")
+
+    for path in ("/a2a/v1/message:send", "/.well-known/agent-card.json/v1/message:send"):
+        app.add_api_route(path, a2a_rest_send, methods=["POST"], include_in_schema=False)
+
+    @app.get("/a2a/v1/tasks/{task_id}", include_in_schema=False)
+    async def a2a_rest_get(request: Request, task_id: str) -> Response:
+        return await a2a.handle_rest(request, "get", task_id)
+
+    @app.post("/a2a/v1/tasks/{task_id}:cancel", include_in_schema=False)
+    async def a2a_rest_cancel(request: Request, task_id: str) -> Response:
+        return await a2a.handle_rest(request, "cancel", task_id)
 
     @v1.get("/capabilities/{cap_id}", tags=["capabilities"])
     def get_capability(cap_id: Annotated[str, Path(max_length=64)]) -> Capability:

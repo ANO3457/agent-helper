@@ -80,8 +80,13 @@ def test_notification_is_accepted_without_body(client):
 
 
 def test_get_and_delete_are_not_allowed(client):
-    assert client.get("/mcp").status_code == 405
+    # A client asking for the standalone SSE stream gets 405, as the transport requires.
+    assert client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code == 405
     assert client.delete("/mcp").status_code == 405
+    # Anyone else gets a short description instead of an error.
+    info = client.get("/mcp")
+    assert info.status_code == 200 and "POST JSON-RPC" in info.json()["how"]
+    assert client.options("/mcp").status_code == 204
 
 
 def test_tools_list_in_both_eras(client):
@@ -140,10 +145,17 @@ def test_modern_header_without_meta_is_a_mismatch(client):
 
 
 def test_unknown_method(client):
-    assert modern(client, "resources/list").status_code == 404
-    r = legacy(client, "resources/list")
+    assert modern(client, "sampling/whatever").status_code == 404
+    r = legacy(client, "sampling/whatever")
     assert r.status_code == 200
     assert r.json()["error"]["code"] == -32601
+
+
+def test_empty_prompt_and_resource_lists(client):
+    for era in (modern, legacy):
+        assert era(client, "prompts/list").json()["result"]["prompts"] == []
+        assert era(client, "resources/list").json()["result"]["resources"] == []
+        assert era(client, "resources/templates/list").json()["result"]["resourceTemplates"] == []
 
 
 def test_bad_bodies(client):
