@@ -84,7 +84,31 @@ NAMED = {
     "/agents.json": "compat:agents.json",
     "/agents.txt": "compat:agents.txt",
     "/.well-known/llms.txt": "compat:well-known-llms.txt",
+    # Answered since docs/decisions/0028.
+    "/favicon.ico": "favicon.ico",
+    "/a2a/health": "a2a:health",
+    "/a2a/.well-known/agent-card.json": "compat:a2a-agent-card",
+    "/a2a/v1/message:send": "a2a:rest:send",
+    "/.well-known/agent-card.json/v1/message:send": "a2a:rest:send",
+    "/mcp/server-card": "compat:mcp-server-card",
+    "/mcp/server-card.json": "compat:mcp-server-card",
+    "/.well-known/mcp": "compat:mcp-server-card",
+    "/.well-known/glama.json": "compat:glama.json",
+    "/.well-known/ard.json": "compat:index",
+    "/.well-known/agent-directory.json": "compat:index",
+    "/.well-known/ai-catalog.json": "compat:index",
+    "/.well-known/x402": "compat:payment",
+    "/.well-known/x402.json": "compat:payment",
+    "/.well-known/payment-manifest.json": "compat:payment",
+    "/.well-known/mpp.json": "compat:payment",
 }
+# Other URLs clients try for the MCP endpoint (docs/decisions/0028), counted together by method.
+MCP_ALIAS_PATHS = frozenset(
+    {
+        "/mcp/sse", "/sse", "/api/mcp", "/mcp/mcp", "/a2a/mcp", "/llms.txt/mcp", "/.well-known/agent-card.json/mcp",
+        "/.well-known/agent-helper.json/mcp", "/.well-known/mcp.json/mcp", "/.well-known/mcp/server-card.json/mcp",
+    }
+)  # fmt: skip
 V1_SEGMENT = re.compile(r"^/v1/([a-z][a-z0-9-]{0,31})(?:/|$)")
 # Methods are counted by name only when they are ordinary HTTP methods, so a caller cannot invent metrics.
 METHODS = frozenset({"get", "head", "post", "put", "patch", "delete", "options"})
@@ -149,6 +173,10 @@ def endpoint_of(scope: Scope, status: int, v1_segments: frozenset[str] = frozens
         return NAMED[path]
     if path in ("/mcp", "/a2a"):
         return f"{path[1:]}:{method}"
+    if path in MCP_ALIAS_PATHS:
+        return f"mcp-alias:{method}"
+    if path.startswith("/a2a/v1/tasks/"):
+        return f"a2a:rest:tasks:{method}"
     match = V1_SEGMENT.match(path)
     if match:
         return f"v1:{match.group(1)}:{method}" if match.group(1) in v1_segments else "v1:other"

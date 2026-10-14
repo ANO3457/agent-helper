@@ -800,6 +800,19 @@ class McpEndpoint:
     def capabilities(self) -> dict[str, Any]:
         return {"tools": {"listChanged": False}}
 
+    def endpoint_info(self) -> dict[str, Any]:
+        """What a plain GET on the MCP endpoint shows (a browser, a scanner, a client looking around)."""
+        base = self.settings.public_base_url
+        return {
+            "name": "agent-helper",
+            "protocol": "MCP, Streamable HTTP, stateless",
+            "how": f"POST JSON-RPC 2.0 to {base}/mcp. No standalone SSE stream (GET with Accept: "
+            "text/event-stream answers 405), no sessions, no authentication.",
+            "protocol_versions": list(SUPPORTED_VERSIONS),
+            "server_card": f"{base}/.well-known/mcp/server-card.json",
+            "docs": f"{base}/llms.txt",
+        }
+
     def server_card(self) -> dict[str, Any]:
         """A static description of this MCP server for discovery before connecting (served at
         /.well-known/mcp/server-card.json). Lists the tools so a client can judge relevance up front."""
@@ -910,6 +923,13 @@ class McpEndpoint:
             return _result(msg_id, {"tools": tools, "ttlMs": TOOL_LIST_TTL_MS, "cacheScope": "public"})
         if method == "tools/call":
             return await self._call_tool(request, msg_id, params)
+        # No prompts or resources here; some clients list them anyway, so they get empty lists, not errors.
+        if method == "prompts/list":
+            return _result(msg_id, {"prompts": []})
+        if method == "resources/list":
+            return _result(msg_id, {"resources": []})
+        if method == "resources/templates/list":
+            return _result(msg_id, {"resourceTemplates": []})
         # Modern servers answer unknown methods with 404; a legacy client could mistake a 404 for an expired
         # session, so legacy requests get the JSON-RPC error with status 200.
         return _error(msg_id, METHOD_NOT_FOUND, f"Method not found: {method}", 404 if modern else 200)
