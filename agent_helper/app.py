@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from . import __version__, autoreply, discovery, helpdesk
 from .a2a import A2AEndpoint, agent_card, agent_card_v03
 from .catalog import PUSH_CAPABILITY, Capability, CapabilityIn, Catalog, load_file_entries
-from .config import Settings, parse_networks
+from .config import MIN_ADMIN_SECRET_LENGTH, Settings, parse_networks
 from .console import build_console
 from .handles import HANDLE_PATTERN, OPERATOR_HANDLE
 from .limits import GuardMiddleware, TokenBucket, client_key
@@ -785,12 +785,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- operator API ---------------------------------------------------------------------------
 
-    def require_admin(authorization: AuthHeader = None) -> None:
-        if not settings.admin_enabled:
+    bot_token = settings.operator_bot_token or ""
+    bot_enabled = len(bot_token) >= MIN_ADMIN_SECRET_LENGTH
+    # What the chat bot's token may do (docs/decisions/0027): list and read requests, and answer them.
+    bot_routes = frozenset(
+        {
+            ("GET", "/admin/v1/requests"),
+            ("GET", "/admin/v1/requests/{req_id}"),
+            ("POST", "/admin/v1/requests/{req_id}/replies"),
+        }
+    )
+
+    def require_admin(request: Request, authorization: AuthHeader = None) -> None:
+        if not settings.admin_enabled and not bot_enabled:
             raise HTTPException(404, "Not Found")
         token = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else ""
-        if not hmac.compare_digest(token.encode(), settings.admin_secret.encode()):  # type: ignore[union-attr]
+        admin_ok = settings.admin_enabled and hmac.compare_digest(token.encode(), settings.admin_secret.encode())  # type: ignore[union-attr]
+        bot_ok = bot_enabled and hmac.compare_digest(token.encode(), bot_token.encode())
+        if admin_ok:
+            return
+        if not bot_ok:
             raise HTTPException(401, "unauthorized")
+        route = request.scope.get("route")
+        if (request.method, getattr(route, "path", "")) not in bot_routes:
+            raise HTTPException(403, "this token may only list, read and answer requests")
+        request.state.via = "telegram"
 
     admin = APIRouter(prefix="/admin/v1", dependencies=[Depends(require_admin)], include_in_schema=False)
 
@@ -808,10 +827,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RequestOut(**found)
 
     @admin.post("/requests/{req_id}/replies")
-    def admin_reply(req_id: str, body: OperatorReplyIn) -> RequestOut:
+    def admin_reply(req_id: str, body: OperatorReplyIn, request: Request) -> RequestOut:
         found = store.add_operator_reply(req_id, body.message, body.status)
         if found is None:
             raise HTTPException(404, "no such request")
+        via = getattr(request.state, "via", "admin API")
+        logging.getLogger("agent_helper.audit").info("operator reply to %s (%s) via %s", req_id, body.status, via)
         return RequestOut(**found)
 
     @admin.post("/requests/{req_id}/referrals")

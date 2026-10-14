@@ -37,3 +37,4 @@ Decisions are recorded as short decision records under [`decisions/`](decisions/
 | [0024](decisions/0024-a2a-0-3-and-common-discovery-files.md) | A2A 0.3 clients, and answers for often-probed discovery files |
 | [0025](decisions/0025-refused-calls-and-daily-summary.md) | Counting refused calls, and a daily summary to the operator |
 | [0026](decisions/0026-automatic-answers-to-connectivity-checks.md) | Automatic answers to connectivity checks |
+| [0027](decisions/0027-chat-bot-token.md) | A narrow token for the operator's chat bot |
