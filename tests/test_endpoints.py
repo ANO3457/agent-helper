@@ -106,3 +106,18 @@ def test_glama_only_with_a_configured_maintainer(make_client):
     body = with_mail.get("/.well-known/glama.json").json()
     assert body["maintainers"] == [{"email": "maintainer@example.org"}]
     assert body["$schema"].startswith("https://glama.ai/")
+
+
+def test_aliases_and_new_paths_have_bounded_usage_names():
+    from agent_helper import discovery
+    from agent_helper.usage import MCP_ALIAS_PATHS, endpoint_of
+
+    assert MCP_ALIAS_PATHS == set(discovery.MCP_ALIASES)
+
+    def scope(path, method="GET"):
+        return {"type": "http", "path": path, "method": method, "headers": []}
+
+    assert endpoint_of(scope("/sse", "POST"), 200) == "mcp-alias:post"
+    assert endpoint_of(scope("/a2a/v1/tasks/req_abc"), 200) == "a2a:rest:tasks:get"
+    assert endpoint_of(scope("/a2a/v1/tasks/req_abc:cancel", "POST"), 200) == "a2a:rest:tasks:post"
+    assert endpoint_of(scope("/.well-known/x402"), 200) == "compat:payment"
