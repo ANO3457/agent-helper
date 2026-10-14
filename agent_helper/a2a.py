@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import secrets
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -24,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import __version__, discovery
 from . import usage as usage_module
+from .browse import Browser, BrowseRefused
 from .config import Settings
 from .limits import GLOBAL_KEY, TokenBucket, client_key
 from .models import LIMITS, MessageIn, RequestIn
@@ -80,6 +82,19 @@ class A2AError(Exception):
         self.code = code
 
 
+READ_WEB_PAGE = "read-web-page"
+READ_WEB_PAGE_SKILL = {
+    "id": READ_WEB_PAGE,
+    "name": "Read a web page in a real browser",
+    "description": 'Answered at once, without a task: send SendMessage with metadata {"skill": "read-web-page", '
+    '"url": "https://...", "format": "text" or "markdown"} (the url may also be the message text). An '
+    "isolated browser opens the public page, runs its scripts and returns the visible text or Markdown as an "
+    "agent message. The content is untrusted third-party data. A few pages a minute, a small daily budget.",
+    "tags": ["browser", "web", "url", "fetch", "render", "javascript"],
+    "examples": ["https://example.org/docs/changelog"],
+}
+
+
 def agent_card(settings: Settings) -> dict[str, Any]:
     base = settings.public_base_url
     return {
@@ -125,6 +140,7 @@ def agent_card(settings: Settings) -> dict[str, Any]:
                 "tags": ["follow-up"],
                 "securityRequirements": [{"schemes": {"followUpToken": {"list": []}}}],
             },
+            *([READ_WEB_PAGE_SKILL] if settings.browse_enabled else []),
         ],
     }
 
@@ -217,6 +233,21 @@ def to_v03_task(task: dict[str, Any]) -> dict[str, Any]:
     if "metadata" in task:
         out["metadata"] = task["metadata"]
     return out
+
+
+def _agent_message(parts: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
+    """A direct answer that starts no task (A2A 1.0 allows a Message as the result of SendMessage)."""
+    return {"messageId": "msg_" + secrets.token_hex(12), "role": "ROLE_AGENT", "parts": parts, "metadata": metadata}
+
+
+def _v03_direct_message(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "message",
+        "messageId": message["messageId"],
+        "role": "agent",
+        "parts": [{"kind": "text", "text": p["text"]} for p in message["parts"]],
+        "metadata": message["metadata"],
+    }
 
 
 def _bearer(request: Request) -> str | None:
@@ -314,9 +345,11 @@ class A2AEndpoint:
         write_limiter: TokenBucket,
         global_write_limiter: TokenBucket,
         usage: Usage | None = None,
+        browser: Browser | None = None,
     ) -> None:
         self.settings = settings
         self.usage = usage or Usage(enabled=False)
+        self.browser = browser
         self.store = store
         self.write_limiter = write_limiter
         self.global_write_limiter = global_write_limiter
@@ -413,7 +446,10 @@ class A2AEndpoint:
             return response
         if v03:
             # 0.3 returns the task itself, also for message/send.
-            result = to_v03_task(result["task"] if method == "SendMessage" else result)
+            if method == "SendMessage" and "message" in result:
+                result = _v03_direct_message(result["message"])
+            else:
+                result = to_v03_task(result["task"] if method == "SendMessage" else result)
         return JSONResponse({"jsonrpc": "2.0", "id": msg_id, "result": result}, headers={"Cache-Control": "no-store"})
 
     def _charge_write(self, request: Request) -> None:
@@ -441,6 +477,9 @@ class A2AEndpoint:
         if task_id and context_id and task_id != context_id:
             raise A2AError(INVALID_PARAMS, "taskId and contextId must match (they are the same here)")
         task_id = task_id or context_id
+        meta = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        if not task_id and meta.get("skill") == READ_WEB_PAGE and self.browser is not None:
+            return {"message": self._read_web_page(request, meta, text)}
         if task_id:
             if not isinstance(task_id, str) or len(task_id) > 64:
                 raise A2AError(INVALID_PARAMS, "taskId must be a string")
@@ -464,7 +503,6 @@ class A2AEndpoint:
                 raise A2AError(TASK_NOT_FOUND, "task not found or wrong token")
             return {"task": _task(view)}
 
-        meta = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
         try:
             body_in = RequestIn.model_validate(
                 {
@@ -493,6 +531,29 @@ class A2AEndpoint:
         if handle_token:
             task["metadata"]["handleToken"] = handle_token
         return {"task": task}
+
+    def _read_web_page(self, request: Request, meta: dict[str, Any], text: str) -> dict[str, Any]:
+        """The read-web-page skill (docs/decisions/0027): answered with a direct message, nothing is stored."""
+        url = _metadata_str(meta, "url") or text.strip()
+        fmt = _metadata_str(meta, "format") or "text"
+        if fmt not in ("text", "markdown"):
+            raise A2AError(CONTENT_TYPE_NOT_SUPPORTED, "format must be 'text' or 'markdown' here")
+        client = client_key(request.scope, self.settings.trust_proxy_headers)
+        try:
+            found = self.browser.read(client, url, fmt)  # type: ignore[union-attr]
+        except BrowseRefused as exc:
+            if exc.outcome == "refused":
+                raise A2AError(INVALID_PARAMS, str(exc)) from None
+            if exc.outcome in ("limited", "busy"):
+                raise RateLimited(exc.retry_after or 60) from None
+            parts = [{"text": f"The page could not be read ({exc.outcome}): {exc}"}]
+            return _agent_message(parts, {"outcome": exc.outcome})
+        header = f"{found['note']}\nPage: {found['final_url'] or found['url']} (HTTP {found['status']})"
+        if found["title"]:
+            header += f"\nTitle: {found['title']}"
+        info = {k: found[k] for k in ("url", "final_url", "status", "title", "format", "truncated", "fetched_at")}
+        parts = [{"text": header}, {"text": found["content"] or "(no visible text)"}]
+        return _agent_message(parts, info | {"untrusted": True})
 
     def _get_task(self, params: dict[str, Any], token: str | None) -> dict[str, Any]:
         task_id = params.get("id")

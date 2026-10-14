@@ -1,0 +1,81 @@
+# Example only (docs/decisions/0027): the web page reader next to the service. Copy, adapt, never commit the
+# live file. Three containers and three networks:
+#
+#   service ──browse-ctl (internal)── browse-gateway ──browse-inner (internal)── browser
+#                                           └──────────── egress ─────────────────┘
+#                                                            │
+#                                                     browse-out ── internet
+#
+# The browser can reach nothing but the egress proxy (and the gateway, which needs a signature); the
+# service is not on the browser's network. Only `egress` is on a network with internet access, and it
+# refuses private, operator-owned and non-standard destinations for every connection.
+services:
+  agent-helper:
+    # ... as in docker-compose.example.yml, plus:
+    networks: [default, browse-ctl]
+
+  browse-gateway:
+    build: { context: ., dockerfile: Dockerfile.browser }
+    command: ["python", "-m", "agent_helper.browse_gateway"]
+    env_file: [browse.env]
+    environment:
+      BROWSER_HOST: browser
+      EGRESS_PROXY: http://egress:3128
+    networks: [browse-ctl, browse-inner]
+    depends_on: [browser, egress]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+
+  browser:
+    build: { context: ., dockerfile: Dockerfile.browser }
+    command: ["python", "-m", "agent_helper.browser_server"]
+    env_file: [browse.env]
+    environment:
+      EGRESS_PROXY: http://egress:3128
+    networks: [browse-inner]     # internal only: no route to the LAN, the host or the internet
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/app/.mozilla       # nothing a page leaves behind survives a restart
+    shm_size: 512m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 1.5
+
+  egress:
+    build: .                     # the service image: the proxy needs only the standard library
+    command: ["python", "-m", "agent_helper.egress"]
+    env_file: [browse.env]
+    networks: [browse-inner, browse-out]
+    # A public resolver, never one with a view of the operator's network (the router's, for example).
+    # dns:
+    #   - <public resolver address>
+    # To leave through another public address than the operator's own, run this container behind a VPN
+    # container instead (network_mode: "service:<vpn>"), and keep the internal network attached there.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 3128), 2)"]
+      interval: 30s
+      timeout: 3s
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 0.5
+
+networks:
+  browse-ctl:
+    internal: true
+  browse-inner:
+    internal: true
+  browse-out: {}                 # the only network with a way out

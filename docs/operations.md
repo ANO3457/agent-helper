@@ -183,6 +183,44 @@ cannot resume it), `DELETE /admin/v1/push/{id}` removes it. Logs name the job ki
 URL. The relay logs the same without URLs; if a host owner asks to be blocked for good, add the host to
 `PUSH_DENY_DOMAINS` on the relay.
 
+## Web page reader
+
+Off by default ([decision 0027](decisions/0027-web-page-reader.md)). It needs three more containers, all
+from this repository (example: `docker-compose.browse.example.yml`, settings in
+`config/browse.env.example`):
+
+1. **egress**, the filtering forward proxy (`python -m agent_helper.egress`, service image). It is the
+   only container of the reader with internet access. Give it a public DNS resolver (`dns:`), and put the
+   operator's own names into `EGRESS_DENY_DOMAINS`, the operator's public networks into `EGRESS_DENY_NETS`
+   and the dynamic DNS name of the operator's connection into `EGRESS_DENY_ADDRESSES_OF`, so a page can
+   never hairpin back in through the router or the reverse proxy.
+2. **browser**, Camoufox as a Playwright server (`python -m agent_helper.browser_server`, browser image
+   `Dockerfile.browser`), on an internal network only. Do not reuse a browser instance that serves
+   anything else.
+3. **browse-gateway** (`python -m agent_helper.browse_gateway`, browser image), on the browser's network
+   and on an internal network shared with the service.
+
+Then set `BROWSE_MODE=on`, `BROWSE_GATEWAY_URL` and `BROWSE_SECRET` (the same value as the gateway's) in the
+service's configuration and attach the service to the gateway's internal network. Never attach the service
+to the browser's network, and never give the browser's network a way out.
+
+**Checks after turning it on:** a public page reads; `http://<a LAN address, such as the router's>/`,
+`http://<the reverse proxy's own name>/` and a public name that resolves to a private address all fail;
+from inside the browser container, nothing but `egress:3128` answers. The egress proxy logs refusals at
+debug level (`LOG_LEVEL=debug`) with the registrable domain only.
+
+**Turning it off:** `BROWSE_MODE=off` and restart the service (the tool, the route, the catalog entry and
+the `/llms.txt` lines disappear), or stop the three containers (the service then answers "not available").
+Sites can be refused one by one with `BROWSE_DENY_DOMAINS` (service and gateway).
+
+**Logs:** one line per page in the service log: time, registrable domain, format, outcome. No paths,
+queries, client addresses or content. Keep them as long as the container logs are kept; they answer the
+question "who asked for this site" after an abuse complaint.
+
+**Updating:** Camoufox pins a Playwright range and the gateway must use the same Playwright as the
+server, so both run from one image. Update `requirements-browser.txt` deliberately, rebuild, and run the
+checks above again.
+
 ## Monitoring and logs
 
 The service logs one line per request to stdout: method, path, status, duration. It does not log

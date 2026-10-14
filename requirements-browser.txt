@@ -1,0 +1,4 @@
+# The browser image only (Dockerfile.browser, docs/decisions/0027). Exact versions; Camoufox requires
+# playwright<1.63. Not hash-locked yet: generate hashes (pip-compile --generate-hashes) before relying on it.
+camoufox==0.5.8
+playwright==1.62.0
