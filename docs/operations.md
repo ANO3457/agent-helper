@@ -206,7 +206,11 @@ each container gets only its own file):
    on its fixed address in the browser's network (`EGRESS_LISTEN_HOST`). Give it a public DNS resolver (`dns:`), and put the
    operator's own names into `EGRESS_DENY_DOMAINS`, the operator's public networks into `EGRESS_DENY_NETS`
    and the dynamic DNS name of the operator's connection into `EGRESS_DENY_ADDRESSES_OF`, so a page can
-   never hairpin back in through the router or the reverse proxy.
+   never hairpin back in through the router or the reverse proxy. **With IPv6, put the whole prefix the
+   provider delegates into `EGRESS_DENY_NETS`** (often a /56 or /48), not only the router's address:
+   devices in the LAN have global IPv6 addresses of their own, which count as public, and the dynamic DNS
+   name usually covers only one of them. If the prefix changes, update the list. Docker networks are IPv4 only
+   unless IPv6 is enabled on them; leaving `browse-out` without IPv6 avoids the question entirely.
 2. **browser**, Camoufox as a Playwright server (`python -m agent_helper.browser_server`, browser image
    `Dockerfile.browser`), on an internal network only. Do not reuse a browser instance that serves
    anything else.

@@ -6,7 +6,7 @@
 # - the base image by digest (the same as the service's Dockerfile);
 # - the distribution packages the browser needs, by installing them from a fixed Debian snapshot;
 # - the Python packages by hash (requirements-browser.lock);
-# - the browser build by the SHA-256 of its release asset, checked after `camoufox fetch`.
+# - the browser build by the SHA-256 of its release asset, checked on the downloaded archive.
 # Update them together and deliberately (docs/operations.md, "Web page reader").
 ARG BASE_REGISTRY=docker.io/library
 FROM ${BASE_REGISTRY}/python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
@@ -37,14 +37,13 @@ RUN sed -i \
 COPY agent_helper ./agent_helper
 
 USER app
-# Fetch the paired browser build (camoufox checks it against the digest GitHub reports), then make sure it
-# is exactly the pinned one.
-RUN python -m camoufox fetch \
-    && case "${TARGETARCH:-amd64}" in \
+# Fetch the paired browser build. The downloaded archive itself is hashed and compared with the pinned
+# digest before it is unpacked (camoufox alone compares only with the digest GitHub reports).
+RUN case "${TARGETARCH:-amd64}" in \
          amd64) expected="${CAMOUFOX_SHA256_AMD64}" ;; \
          arm64) expected="${CAMOUFOX_SHA256_ARM64}" ;; \
          *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
        esac \
-    && python -m agent_helper.browser_server --verify-build "${expected}"
+    && python -m agent_helper.browser_server --fetch "${expected}"
 
 # No default command: the compose file starts either the browser server or the gateway.

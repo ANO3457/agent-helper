@@ -140,3 +140,24 @@ def test_browser_build_must_match_the_pinned_digest(tmp_path):
     verify_build(pinned, tmp_path)
     with pytest.raises(SystemExit):
         verify_build("not-a-digest", tmp_path)
+
+
+def test_downloaded_archive_is_checked_against_the_pinned_digest():
+    import hashlib
+    import io
+
+    from agent_helper.browser_server import checking
+
+    archive = b"pretend this is the browser archive"
+    pinned = hashlib.sha256(archive).hexdigest()
+    calls, checked = [], []
+    verify = checking(pinned, lambda buffer, reported, *a, **k: calls.append(reported), checked)
+    buffer = io.BytesIO(archive)
+    buffer.seek(7)
+    verify(buffer, "github-digest")
+    assert calls == ["github-digest"] and checked == [pinned] and buffer.tell() == 0
+
+    tampered = checking(pinned, lambda *a, **k: calls.append("unpacked"), [])
+    with pytest.raises(SystemExit, match="not the pinned one"):
+        tampered(io.BytesIO(archive + b"!"), "github-digest")
+    assert "unpacked" not in calls

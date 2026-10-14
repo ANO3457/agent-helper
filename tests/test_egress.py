@@ -142,6 +142,9 @@ def test_parse_authority_and_rewrite_head():
     for bad in (
         b"POST http://example.org/ HTTP/1.1\r\nTransfer-Encoding: chunked",
         b"POST http://example.org/ HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6",
+        b"POST http://example.org/ HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5",
+        b"POST http://example.org/ HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0",
+        b"POST http://example.org/ HTTP/1.1\r\nContent-Length: \xd9\xa5",
         b"POST http://example.org/ HTTP/1.1\r\nContent-Length: -1",
         b"GET http://example.org/ HTTP/1.1\r\nno colon here",
         b"GET /relative HTTP/1.1",

@@ -7,10 +7,13 @@ the gateway; the preferences below are the first layer, the network layout the s
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 # Firefox preferences: every connection through the proxy (localhost included), nothing that opens a
 # connection or a channel the proxy cannot see, nothing that keeps state or opens files.
@@ -50,17 +53,52 @@ FIREFOX_PREFS: dict[str, object] = {
 }
 
 
+def _digest(expected_sha256: str) -> str:
+    expected = expected_sha256.strip().lower()
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        raise SystemExit("the expected browser digest must be 64 hex digits")
+    return expected
+
+
+def checking(expected_sha256: str, original: Callable[..., Any], checked: list[str]) -> Callable[..., Any]:
+    """Wrap camoufox's own digest check so that the downloaded archive itself is hashed and compared with the
+    pinned digest before camoufox unpacks it (camoufox alone compares only with what GitHub reports)."""
+    expected = _digest(expected_sha256)
+
+    def verify(buffer: Any, reported: Any, *args: Any, **kwargs: Any) -> Any:
+        buffer.seek(0)
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: buffer.read(1 << 20), b""):
+            digest.update(chunk)
+        buffer.seek(0)
+        if digest.hexdigest() != expected:
+            raise SystemExit(f"the downloaded browser archive has digest {digest.hexdigest()}, not the pinned one")
+        checked.append(digest.hexdigest())
+        return original(buffer, reported, *args, **kwargs)
+
+    return verify
+
+
+def fetch_pinned(expected_sha256: str) -> None:
+    """`camoufox fetch`, with the archive checked against the pinned digest before it is unpacked."""
+    import camoufox.multiversion as multiversion  # only in the browser image
+    from camoufox.__main__ import cli
+
+    checked: list[str] = []
+    multiversion.verify_sha256 = checking(expected_sha256, multiversion.verify_sha256, checked)
+    cli(["fetch"], standalone_mode=False)
+    if not checked:
+        raise SystemExit("no browser archive was downloaded and checked")
+    verify_build(expected_sha256)
+
+
 def verify_build(expected_sha256: str, install_dir: Path | None = None) -> None:
-    """Fail the image build unless the fetched browser is exactly the pinned one. `camoufox fetch` checks the
-    download against the digest GitHub reports; this checks that digest against the one recorded in
-    Dockerfile.browser, so a changed release asset cannot slip into a rebuild."""
+    """Fail the image build unless the installed browser is recorded with the pinned digest."""
     if install_dir is None:
         from camoufox.pkgman import INSTALL_DIR  # only in the browser image
 
         install_dir = Path(INSTALL_DIR)
-    expected = expected_sha256.strip().lower()
-    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
-        raise SystemExit("the expected browser digest must be 64 hex digits")
+    expected = _digest(expected_sha256)
     found = []
     for version_file in sorted(install_dir.rglob("version.json")):
         try:
@@ -72,6 +110,10 @@ def verify_build(expected_sha256: str, install_dir: Path | None = None) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--fetch":
+        fetch_pinned(sys.argv[2])
+        print("browser archive and build match the pinned digest")
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--verify-build":
         verify_build(sys.argv[2])
         print("browser build matches the pinned digest")
