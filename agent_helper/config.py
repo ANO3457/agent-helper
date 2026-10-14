@@ -184,6 +184,7 @@ class Settings:
     public_base_url: str = "http://localhost:8080"
     data_dir: Path = Path("./data")
     admin_secret: str | None = None
+    operator_bot_token: str | None = None
     glama_maintainer_email: str | None = None
     trust_proxy_headers: bool = False
     max_body_bytes: int = 16 * 1024
@@ -246,6 +247,7 @@ class Settings:
             public_base_url=os.environ.get("PUBLIC_BASE_URL", cls.public_base_url).rstrip("/"),
             data_dir=Path(os.environ.get("DATA_DIR", str(cls.data_dir))),
             admin_secret=os.environ.get("ADMIN_AUTH_SECRET") or None,
+            operator_bot_token=os.environ.get("OPERATOR_BOT_TOKEN") or None,
             glama_maintainer_email=os.environ.get("GLAMA_MAINTAINER_EMAIL") or None,
             trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", cls.trust_proxy_headers),
             max_body_bytes=_int("MAX_BODY_BYTES", cls.max_body_bytes),
@@ -295,6 +297,8 @@ class Settings:
             log.warning(
                 "NOTIFY_WEBHOOK_SECRET is not set; anyone who learns the webhook URL can send fake events to it"
             )
+        if settings.operator_bot_token is not None and len(settings.operator_bot_token) < MIN_ADMIN_SECRET_LENGTH:
+            log.warning("OPERATOR_BOT_TOKEN is shorter than %d characters; it is ignored", MIN_ADMIN_SECRET_LENGTH)
         if settings.admin_secret is not None and not settings.admin_enabled:
             log.warning(
                 "ADMIN_AUTH_SECRET is shorter than %d characters; admin API is disabled",

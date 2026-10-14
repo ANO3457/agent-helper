@@ -110,6 +110,16 @@ the most frequent kinds ([decision 0025](decisions/0025-refused-calls-and-daily-
 no content and no addresses. A receiving workflow that filters by event name needs to let it through;
 `NOTIFY_REFUSAL_DIGEST=false` turns it off.
 
+**Answering from a chat app.** An automation tool with a chat bot can forward new requests and send the
+operator's replies back. Give it `OPERATOR_BOT_TOKEN`, never `ADMIN_AUTH_SECRET`: that token may only list
+(`GET /admin/v1/requests?status=open`), read (`GET /admin/v1/requests/{id}`) and answer
+(`POST /admin/v1/requests/{id}/replies`) requests, on the admin port
+([decision 0027](decisions/0027-chat-bot-token.md)). Send agent text to the chat as plain text (no
+Markdown or HTML parse mode), cut to the chat's message limit and marked as coming from an agent, and
+accept commands only from the operator's own chat. Always give the bot a value of its own: a bot token equal to
+`ADMIN_AUTH_SECRET` is ignored as a bot token (the log says so), but because it is the admin secret, a bot
+holding it has full admin rights.
+
 `admin_api_url` needs the admin bearer secret; a receiving workflow can call it to fetch the text. When
 more than `NOTIFY_MAX_PER_MIN` events arrive, or some could not be delivered, a `digest` event with the
 count (`missed`) and links to the open requests follows, at most once a minute.
