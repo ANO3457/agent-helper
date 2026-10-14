@@ -308,3 +308,10 @@ def test_discovery_when_on(reader):
     skills = {s["id"] for s in reader.get("/.well-known/agent-card.json").json()["skills"]}
     assert "read-web-page" in skills
     assert "read_web_page" in reader.get("/.well-known/mcp/server-card.json").text
+
+
+def test_navigating_away_is_noted():
+    result = OK | {"navigated_away": True}
+    out = _browser(lambda job: (200, result)).read("c", "https://example.org/")
+    assert "moved itself" in out["note"] and "navigated_away" not in out
+    assert "moved itself" not in _browser(lambda job: (200, OK)).read("c", "https://example.org/")["note"]

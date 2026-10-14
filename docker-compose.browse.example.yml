@@ -1,5 +1,5 @@
 # Example only (docs/decisions/0029): the web page reader next to the service. Copy, adapt, never commit the
-# live file. Three containers and three networks:
+# live files. Three containers and three networks:
 #
 #   service ──browse-ctl (internal)── browse-gateway ──browse-inner (internal)── browser
 #                                           └──────────── egress ─────────────────┘
@@ -9,6 +9,9 @@
 # The browser can reach nothing but the egress proxy (and the gateway, which needs a signature); the
 # service is not on the browser's network. Only `egress` is on a network with internet access, and it
 # refuses private, operator-owned and non-standard destinations for every connection.
+#
+# Secrets go only where they are used: BROWSE_SECRET to the service (app.env) and the gateway,
+# BROWSER_WS_PATH to the gateway and the browser, nothing to the egress proxy.
 services:
   agent-helper:
     # ... as in docker-compose.example.yml, plus:
@@ -17,10 +20,10 @@ services:
   browse-gateway:
     build: { context: ., dockerfile: Dockerfile.browser }
     command: ["python", "-m", "agent_helper.browse_gateway"]
-    env_file: [browse.env]
+    env_file: [browse-gateway.env]
     environment:
       BROWSER_HOST: browser
-      EGRESS_PROXY: http://egress:3128
+      EGRESS_PROXY: http://10.250.29.3:3128
     networks: [browse-ctl, browse-inner]
     depends_on: [browser, egress]
     restart: unless-stopped
@@ -35,9 +38,9 @@ services:
   browser:
     build: { context: ., dockerfile: Dockerfile.browser }
     command: ["python", "-m", "agent_helper.browser_server"]
-    env_file: [browse.env]
+    env_file: [browser.env]
     environment:
-      EGRESS_PROXY: http://egress:3128
+      EGRESS_PROXY: http://10.250.29.3:3128
     networks: [browse-inner]     # internal only: no route to the LAN, the host or the internet
     restart: unless-stopped
     read_only: true
@@ -54,15 +57,24 @@ services:
   egress:
     build: .                     # the service image: the proxy needs only the standard library
     command: ["python", "-m", "agent_helper.egress"]
-    env_file: [browse.env]
-    networks: [browse-inner, browse-out]
+    env_file: [egress.env]
+    environment:
+      # Listen only on the browser's network, not on the interface towards the internet.
+      EGRESS_LISTEN_HOST: 10.250.29.3
+    networks:
+      browse-inner:
+        ipv4_address: 10.250.29.3
+      browse-out: {}
     # A public resolver, never one with a view of the operator's network (the router's, for example).
     # dns:
     #   - <public resolver address>
-    # To leave through another public address than the operator's own, run this container behind a VPN
-    # container instead (network_mode: "service:<vpn>"), and keep the internal network attached there.
+    #
+    # Behind a VPN (to leave through another public address than the operator's own): give this container
+    # `network_mode: "service:<vpn>"`, attach browse-inner with the fixed address to the VPN container
+    # instead, keep EGRESS_LISTEN_HOST at that address (never 0.0.0.0: that would include the tunnel), and
+    # set EGRESS_NO_OWN_ADDRESS=1 only if the VPN's exit address is really not the operator's.
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 3128), 2)"]
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('10.250.29.3', 3128), 2)"]
       interval: 30s
       timeout: 3s
     restart: unless-stopped
@@ -78,4 +90,7 @@ networks:
     internal: true
   browse-inner:
     internal: true
+    ipam:
+      config:
+        - subnet: 10.250.29.0/24   # any free subnet; keep the egress address above in line with it
   browse-out: {}                 # the only network with a way out

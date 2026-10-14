@@ -212,12 +212,15 @@ class PlaywrightDriver:
                 pass  # many pages never go idle; read what is there
             if job["wait_ms"]:
                 await page.wait_for_timeout(min(job["wait_ms"], left_ms()))
-            final_url = page.url if urlsplit(page.url).scheme in ("http", "https") else job["url"]
+            # A page that moved itself to a non-web address (about:, data:, ...) is reported under the URL
+            # asked for, and the answer says so.
+            navigated_away = urlsplit(page.url).scheme not in ("http", "https")
             result: dict[str, Any] = {
                 "outcome": "ok",
                 "status": response.status,
-                "final_url": final_url,
+                "final_url": job["url"] if navigated_away else page.url,
                 "title": (await page.title())[:500],
+                "navigated_away": navigated_away,
             }
             if job["format"] == "screenshot":
                 image = await page.screenshot(type="jpeg", quality=60, full_page=False, timeout=left_ms())

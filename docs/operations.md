@@ -197,10 +197,13 @@ URL. The relay logs the same without URLs; if a host owner asks to be blocked fo
 
 Off by default ([decision 0029](decisions/0029-web-page-reader.md)). It needs three more containers, all
 from this repository (example: `docker-compose.browse.example.yml`, settings in
-`config/browse.env.example`):
+`config/egress.env.example`, `config/browser.env.example`, `config/browse-gateway.env.example`;
+each container gets only its own file):
 
 1. **egress**, the filtering forward proxy (`python -m agent_helper.egress`, service image). It is the
-   only container of the reader with internet access. Give it a public DNS resolver (`dns:`), and put the
+   only container of the reader with internet access. It refuses to start without the operator's own
+   addresses (or `EGRESS_NO_OWN_ADDRESS=1` behind a VPN whose exit is not the operator's). It listens only
+   on its fixed address in the browser's network (`EGRESS_LISTEN_HOST`). Give it a public DNS resolver (`dns:`), and put the
    operator's own names into `EGRESS_DENY_DOMAINS`, the operator's public networks into `EGRESS_DENY_NETS`
    and the dynamic DNS name of the operator's connection into `EGRESS_DENY_ADDRESSES_OF`, so a page can
    never hairpin back in through the router or the reverse proxy.
@@ -216,7 +219,8 @@ to the browser's network, and never give the browser's network a way out.
 
 **Checks after turning it on:** a public page reads; `http://<a LAN address, such as the router's>/`,
 `http://<the reverse proxy's own name>/` and a public name that resolves to a private address all fail;
-from inside the browser container, nothing but `egress:3128` answers. The egress proxy logs refusals at
+from inside the browser container, nothing but the egress proxy's port answers, and the proxy is not
+reachable from the internet side or a VPN tunnel. The egress proxy logs refusals at
 debug level (`LOG_LEVEL=debug`) with the registrable domain only.
 
 **Turning it off:** `BROWSE_MODE=off` and restart the service (the tool, the route, the catalog entry and
@@ -228,8 +232,11 @@ queries, client addresses or content. Keep them as long as the container logs ar
 question "who asked for this site" after an abuse complaint.
 
 **Updating:** Camoufox pins a Playwright range and the gateway must use the same Playwright as the
-server, so both run from one image. Update `requirements-browser.txt` deliberately, rebuild, and run the
-checks above again.
+server, so both run from one image. Everything in it is pinned: bump the camoufox version in
+`requirements-browser.txt`, regenerate `requirements-browser.lock` (the command is in that file), read the
+paired browser build from the package's `browser-pin.json` and its asset digests from the release, set
+`CAMOUFOX_SHA256_*` and, if needed, `DEBIAN_SNAPSHOT` in `Dockerfile.browser`, rebuild, and run the checks
+above again. The build fails if the fetched browser does not match the pinned digest.
 
 ## Monitoring and logs
 

@@ -94,7 +94,15 @@ HTTP request, including each redirect and subresource:
   `PUBLIC_BASE_URL`), `EGRESS_DENY_DOMAINS`, `EGRESS_DENY_NETS`, and the current addresses of every name in
   `EGRESS_DENY_ADDRESSES_OF` (re-resolved every 5 minutes, meant for a dynamic DNS name of the operator's
   connection, so a changing public address stays refused; if a lookup fails the last addresses stay
-  refused). These lists exist only in the live configuration.
+  refused). These lists exist only in the live configuration. **The proxy does not start** unless
+  `EGRESS_DENY_NETS` or `EGRESS_DENY_ADDRESSES_OF` is set, or `EGRESS_NO_OWN_ADDRESS=1` says it leaves
+  through an address that is not the operator's (a VPN); it logs how many entries it refuses at start.
+- **Plain HTTP: one request per connection.** The proxy forwards exactly one checked request (with a
+  declared length; chunked request bodies are refused) and exactly its response, marked
+  `Connection: close`, then closes. Nothing else the client sends on that connection reaches the origin,
+  so a second request for another host can never ride on the first one's check.
+- It listens only on the browser's network (`EGRESS_LISTEN_HOST`, a fixed address there), never on the
+  interface towards the internet or a VPN tunnel.
 - Bounded tunnels: at most `EGRESS_MAX_TUNNELS` (64) at once, a 15-second idle timeout, a 60-second
   lifetime, and 20 MB per tunnel. A refusal is a `403` for plain HTTP and a refused `CONNECT`; the browser
   sees an ordinary network error. Nothing distinguishes "refused" from "unreachable" for the agent.
@@ -145,6 +153,14 @@ The service calls `POST /v1/browse/jobs` on the gateway with the HMAC scheme of 
 checked again in full on the gateway (URL rules, format, limits), so a compromised service still cannot
 make the gateway do more than read pages. The gateway reaches the browser only with a secret WebSocket
 path (`BROWSER_WS_PATH`); the browser listens only on `browse-inner`.
+
+Each container gets only what it uses: `BROWSE_SECRET` goes to the service and the gateway,
+`BROWSER_WS_PATH` to the gateway and the browser; the browser (the part most exposed to hostile pages)
+and the egress proxy get no service secret.
+
+The browser image is pinned like the service image: the base image by digest, the distribution
+packages from a fixed Debian snapshot, the Python packages by hash, and the browser build by the SHA-256
+of its release asset, checked during the build.
 
 ### 7. Logs and privacy
 

@@ -11,6 +11,7 @@ from agent_helper.egress import (
     EgressProxy,
     EgressSettings,
     Policy,
+    close_response_head,
     parse_authority,
     rewrite_head,
 )
@@ -133,10 +134,16 @@ def test_parse_authority_and_rewrite_head():
         b"GET http://example.org/a?b=1 HTTP/1.1\r\nHost: example.org\r\nProxy-Connection: keep-alive\r\n"
         b"Proxy-Authorization: Basic eA==\r\nConnection: keep-alive\r\nUpgrade: h2c\r\nAccept: */*"
     )
-    host, port, out = rewrite_head(head)
-    assert (host, port) == ("example.org", 80)
+    host, port, out, length = rewrite_head(head)
+    assert (host, port, length) == ("example.org", 80, 0)
     assert out == b"GET /a?b=1 HTTP/1.1\r\nHost: example.org\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    post = b"POST http://example.org/f HTTP/1.1\r\nHost: example.org\r\nContent-Length: 5"
+    assert rewrite_head(post)[3] == 5
     for bad in (
+        b"POST http://example.org/ HTTP/1.1\r\nTransfer-Encoding: chunked",
+        b"POST http://example.org/ HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6",
+        b"POST http://example.org/ HTTP/1.1\r\nContent-Length: -1",
+        b"GET http://example.org/ HTTP/1.1\r\nno colon here",
         b"GET /relative HTTP/1.1",
         b"GET https://example.org/ HTTP/1.1",
         b"GET http://user@example.org/ HTTP/1.1",
@@ -147,33 +154,79 @@ def test_parse_authority_and_rewrite_head():
             rewrite_head(bad)
 
 
+def test_response_head_is_marked_close():
+    head = b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nContent-Length: 2"
+    assert close_response_head(head) == b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
+
+
+@pytest.mark.parametrize(
+    "env,ok",
+    [
+        ({}, False),
+        ({"PUBLIC_BASE_URL": "https://own.example"}, False),  # the own name alone is not enough
+        ({"EGRESS_DENY_NETS": "198.51.100.0/24"}, True),
+        ({"EGRESS_DENY_ADDRESSES_OF": "home.dyndns.example"}, True),
+        ({"EGRESS_NO_OWN_ADDRESS": "1"}, True),
+        ({"EGRESS_DENY_NETS": "not-a-network"}, False),
+        ({"EGRESS_DENY_ADDRESSES_OF": "bad name!"}, False),
+    ],
+)
+def test_proxy_fails_closed_without_the_operators_addresses(monkeypatch, env, ok):
+    for name in ("EGRESS_DENY_NETS", "EGRESS_DENY_ADDRESSES_OF", "EGRESS_NO_OWN_ADDRESS", "PUBLIC_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if ok:
+        EgressSettings.from_env()
+    else:
+        with pytest.raises(SystemExit):
+            EgressSettings.from_env()
+
+
+def test_listen_host_from_env(monkeypatch):
+    monkeypatch.setenv("EGRESS_NO_OWN_ADDRESS", "1")
+    monkeypatch.setenv("EGRESS_LISTEN_HOST", "10.250.29.3")
+    assert EgressSettings.from_env().listen_host == "10.250.29.3"
+
+
 # --- the proxy on a real socket, with a loopback "origin" allowed only for the test ---------------
 
 
 class Origin:
     """A one-shot TCP server on loopback that records what it receives and answers."""
 
-    def __init__(self, answer=b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"):
+    def __init__(self, answer=b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", keep_open=False, body=0):
         self.sock = socket.socket()
         self.sock.bind(("127.0.0.1", 0))
         self.sock.listen()
         self.port = self.sock.getsockname()[1]
         self.received = b""
         self.answer = answer
+        self.keep_open = keep_open  # like a keep-alive origin: read on after answering
+        self.body = body
+        self.done = threading.Event()
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
         conn, _ = self.sock.accept()
         conn.settimeout(3)
         try:
-            while b"\r\n\r\n" not in self.received:
+            while b"\r\n\r\n" not in self.received or len(self.received.partition(b"\r\n\r\n")[2]) < self.body:
                 chunk = conn.recv(4096)
                 if not chunk:
                     break
                 self.received += chunk
             conn.sendall(self.answer)
+            if self.keep_open:
+                conn.settimeout(1)
+                try:
+                    while chunk := conn.recv(4096):
+                        self.received += chunk
+                except OSError:
+                    pass
         finally:
             conn.close()
+            self.done.set()
 
 
 @pytest.fixture
@@ -226,6 +279,32 @@ def test_plain_http_is_forwarded_in_origin_form(proxy):
     assert origin.received.startswith(b"GET /page HTTP/1.1\r\n")
     assert b"Proxy-Authorization" not in origin.received and b"Connection: close" in origin.received
     assert server.resolve.calls == ["site.example"]  # resolved once; the checked address is the one used
+
+
+def test_plain_http_carries_one_request_only(proxy):
+    # A keep-alive origin, and a client that sends a second request for another host on the same connection:
+    # the second one must never reach this origin, and the client is told to close.
+    origin = Origin(answer=b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 2\r\n\r\nok", keep_open=True)
+    server = proxy(origin.port, {"site.example": ["127.0.0.1"], "other.example": ["127.0.0.1"]})
+    first = f"GET http://site.example:{origin.port}/one HTTP/1.1\r\nHost: site.example\r\n\r\n".encode()
+    second = f"GET http://other.example:{origin.port}/two HTTP/1.1\r\nHost: other.example\r\n\r\n".encode()
+    answer = _talk(server, first + second)
+    origin.done.wait(5)
+    assert answer.startswith(b"HTTP/1.1 200 OK\r\n") and b"Connection: close" in answer
+    assert b"keep-alive" not in answer and answer.endswith(b"ok")
+    assert b"/one" in origin.received and b"/two" not in origin.received
+    assert server.resolve.calls == ["site.example"]
+
+
+def test_plain_http_body_is_forwarded(proxy):
+    origin = Origin(body=5)
+    server = proxy(origin.port, {"site.example": ["127.0.0.1"]})
+    request = f"POST http://site.example:{origin.port}/f HTTP/1.1\r\nHost: site.example\r\nContent-Length: 5\r\n\r\n"
+    answer = _talk(server, request.encode() + b"hello" + b"GET http://x/ HTTP/1.1\r\n\r\n")
+    origin.done.wait(5)
+    assert answer.endswith(b"ok") and origin.received.endswith(b"\r\n\r\nhello")
+    chunked = f"POST http://site.example:{origin.port}/f HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+    assert _talk(server, chunked.encode()).startswith(b"HTTP/1.1 400")
 
 
 def test_connect_tunnels_to_the_checked_address(proxy):

@@ -124,3 +124,19 @@ def test_valid_job_and_readable_types():
         valid_job(JOB | {"max_chars": True})
     assert _readable("text/html; charset=utf-8") and _readable("application/json") and _readable("text/csv")
     assert not _readable("application/pdf") and not _readable("application/zip") and not _readable("")
+
+
+def test_browser_build_must_match_the_pinned_digest(tmp_path):
+    from agent_helper.browser_server import verify_build
+
+    pinned = "a" * 64
+    with pytest.raises(SystemExit):
+        verify_build(pinned, tmp_path)  # nothing fetched
+    (tmp_path / "156.0.1-beta.36").mkdir()
+    (tmp_path / "156.0.1-beta.36" / "version.json").write_text(json.dumps({"sha256": "b" * 64}))
+    with pytest.raises(SystemExit, match="does not match"):
+        verify_build(pinned, tmp_path)
+    (tmp_path / "156.0.1-beta.36" / "version.json").write_text(json.dumps({"sha256": "A" * 64}))
+    verify_build(pinned, tmp_path)
+    with pytest.raises(SystemExit):
+        verify_build("not-a-digest", tmp_path)

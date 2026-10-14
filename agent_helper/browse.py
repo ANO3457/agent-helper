@@ -297,6 +297,8 @@ def _answer(target: Target, fmt: str, result: dict[str, Any], max_chars: int) ->
         "untrusted": True,
         "note": UNTRUSTED_NOTE,
     }
+    if result.get("navigated_away") is True:
+        out["note"] += " The page then moved itself to a non-web address; final_url is the URL asked for."
     if fmt == "screenshot":
         image = text("image_base64", 2_100_000)
         if not image:

@@ -75,6 +75,14 @@ class EgressSettings:
                 raise SystemExit(f"EGRESS_DENY_ADDRESSES_OF: not a host name: {name[:60]!r}")
         own = urlsplit(os.environ.get("PUBLIC_BASE_URL", "")).hostname
         deny_domains = parse_list(os.environ.get("EGRESS_DENY_DOMAINS", "")) + ((own,) if own else ())
+        no_own_address = os.environ.get("EGRESS_NO_OWN_ADDRESS", "").strip().lower() in {"1", "true", "yes", "on"}
+        if not deny_nets and not names and not no_own_address:
+            # Fail closed: without the operator's own addresses a page could hairpin back in through the
+            # router or the reverse proxy (docs/decisions/0029, step 3).
+            raise SystemExit(
+                "set EGRESS_DENY_NETS and/or EGRESS_DENY_ADDRESSES_OF to the operator's own public addresses, "
+                "or EGRESS_NO_OWN_ADDRESS=1 if the proxy leaves through an address that is not the operator's"
+            )
         return cls(
             allowed_ports=tuple(int(p) for p in parse_list(os.environ.get("EGRESS_ALLOWED_PORTS", "80,443"))),
             deny_domains=deny_domains,
@@ -84,6 +92,7 @@ class EgressSettings:
             idle_timeout=float(os.environ.get("EGRESS_IDLE_TIMEOUT", "15")),
             lifetime=float(os.environ.get("EGRESS_LIFETIME", "60")),
             max_bytes=int(os.environ.get("EGRESS_MAX_BYTES", str(20 * 1024 * 1024))),
+            listen_host=os.environ.get("EGRESS_LISTEN_HOST") or cls.listen_host,
             listen_port=int(os.environ.get("EGRESS_LISTEN_PORT", "3128")),
             log_level=os.environ.get("LOG_LEVEL", "info"),
         )
@@ -205,9 +214,10 @@ def _read_head(sock: socket.socket, timeout: float = HEAD_TIMEOUT_SECONDS) -> tu
     return head, rest
 
 
-def rewrite_head(head: bytes) -> tuple[str, int, bytes]:
-    """A plain-HTTP proxy request (absolute form) as host, port and the head to send to the origin
-    (origin form, `Connection: close`, no proxy headers). Raises ValueError."""
+def rewrite_head(head: bytes) -> tuple[str, int, bytes, int]:
+    """A plain-HTTP proxy request (absolute form) as host, port, the head to send to the origin (origin form,
+    `Connection: close`, no proxy headers) and the length of its body. Raises ValueError, also for chunked
+    request bodies: every request must say how long it is, so exactly one request goes to the origin."""
     lines = head.split(b"\r\n")
     try:
         method, target, version = lines[0].decode("ascii").split(" ")
@@ -221,13 +231,57 @@ def rewrite_head(head: bytes) -> tuple[str, int, bytes]:
     host, port = parse_authority(parts.netloc, 80)
     path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
     out = [f"{method} {path} {version}".encode("ascii")]
+    length = 0
     for line in lines[1:]:
-        name, sep, _ = line.partition(b":")
-        if not sep or name.strip().lower() in DROPPED_HEADERS:
+        name, sep, value = line.partition(b":")
+        name = name.strip().lower()
+        if not sep:
+            raise ValueError("bad header line")
+        if name == b"transfer-encoding":
+            raise ValueError("chunked request bodies are not supported")
+        if name == b"content-length":
+            text = value.strip()
+            if not text.isdigit() or (length and int(text) != length):
+                raise ValueError("bad content length")
+            length = int(text)
+        if name in DROPPED_HEADERS:
             continue
         out.append(line)
     out.append(b"Connection: close")
-    return host, port, b"\r\n".join(out) + b"\r\n\r\n"
+    return host, port, b"\r\n".join(out) + b"\r\n\r\n", length
+
+
+def close_response_head(head: bytes) -> bytes:
+    """The origin's response head with `Connection: close`, so the browser never sends a second request on
+    this proxy connection."""
+    lines = head.split(b"\r\n")
+    kept = [lines[0]]
+    for line in lines[1:]:
+        name = line.partition(b":")[0].strip().lower()
+        if name not in (b"connection", b"keep-alive", b"proxy-connection"):
+            kept.append(line)
+    kept.append(b"Connection: close")
+    return b"\r\n".join(kept) + b"\r\n\r\n"
+
+
+def pipe(src: socket.socket, dst: socket.socket, idle: float, lifetime: float, max_bytes: int) -> int:
+    """Copy bytes one way until `src` closes or a limit is reached. Returns the bytes copied."""
+    started = time.monotonic()
+    moved = 0
+    while moved < max_bytes:
+        left = lifetime - (time.monotonic() - started)
+        if left <= 0:
+            break
+        src.settimeout(min(idle, left))
+        try:
+            chunk = src.recv(65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        dst.sendall(chunk)
+        moved += len(chunk)
+    return moved
 
 
 def splice(a: socket.socket, b: socket.socket, idle: float, lifetime: float, max_bytes: int) -> int:
@@ -310,18 +364,18 @@ class _Handler(socketserver.BaseRequestHandler):
             _send(client, BAD_REQUEST)
             return
         method = first.split(" ", 1)[0]
+        tunnel = method == "CONNECT"
+        rewritten, length = b"", 0
         try:
-            if method == "CONNECT":
+            if tunnel:
                 parts = first.split(" ")
                 if len(parts) != 3:
                     raise ValueError("bad CONNECT line")
                 host, port = parse_authority(parts[1])
-                to_send = rest
-                reply = b"HTTP/1.1 200 Connection established\r\n\r\n"
             else:
-                host, port, rewritten = rewrite_head(head)
-                to_send = rewritten + rest
-                reply = b""
+                host, port, rewritten, length = rewrite_head(head)
+                if length > server.settings.max_bytes:
+                    raise ValueError("request body too large")
         except ValueError:
             _send(client, BAD_REQUEST)
             return
@@ -341,18 +395,41 @@ class _Handler(socketserver.BaseRequestHandler):
         if upstream is None:
             _send(client, BAD_GATEWAY)
             return
+        s = server.settings
         try:
-            if reply:
-                client.sendall(reply)
-            if to_send:
-                upstream.sendall(to_send)
-            s = server.settings
-            moved = splice(client, upstream, s.idle_timeout, s.lifetime, s.max_bytes)
-            log.debug("tunnel %s closed after %d bytes", _domain(host), moved)
-        except OSError:
+            if tunnel:
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                if rest:
+                    upstream.sendall(rest)
+                moved = splice(client, upstream, s.idle_timeout, s.lifetime, s.max_bytes)
+            else:
+                moved = self._one_request(client, upstream, rewritten, rest, length, s)
+            log.debug("connection to %s closed after %d bytes", _domain(host), moved)
+        except (OSError, ValueError):
             pass
         finally:
             upstream.close()
+
+    @staticmethod
+    def _one_request(
+        client: socket.socket, upstream: socket.socket, head: bytes, rest: bytes, length: int, s: EgressSettings
+    ) -> int:
+        """Plain HTTP: exactly one checked request goes to the origin, and exactly its response comes back;
+        then the connection closes. Anything the client sent after the body is never forwarded, so a second
+        request for another host cannot reach this origin unchecked."""
+        body = rest[:length]
+        upstream.sendall(head + body)
+        while len(body) < length:
+            client.settimeout(s.idle_timeout)
+            chunk = client.recv(min(65536, length - len(body)))
+            if not chunk:
+                raise ValueError("client closed during the body")
+            body += chunk
+            upstream.sendall(chunk)
+        response, after = _read_head(upstream, timeout=s.idle_timeout)
+        client.sendall(close_response_head(response) + after)
+        copied = pipe(upstream, client, s.idle_timeout, s.lifetime, s.max_bytes)
+        return len(head) + length + len(response) + len(after) + copied
 
 
 def _domain(host: str) -> str:
@@ -373,7 +450,14 @@ def main() -> None:
     settings = EgressSettings.from_env()
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     with EgressProxy(settings) as server:
-        log.info("egress proxy listening on port %d", settings.listen_port)
+        log.info(
+            "egress proxy on %s:%d; refusing %d own name(s), %d own network(s), the addresses of %d name(s)",
+            settings.listen_host,
+            settings.listen_port,
+            len(settings.deny_domains),
+            len(settings.deny_nets),
+            len(settings.deny_addresses_of),
+        )
         server.serve_forever()
 
 

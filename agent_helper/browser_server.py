@@ -7,7 +7,10 @@ the gateway; the preferences below are the first layer, the network layout the s
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+from pathlib import Path
 
 # Firefox preferences: every connection through the proxy (localhost included), nothing that opens a
 # connection or a channel the proxy cannot see, nothing that keeps state or opens files.
@@ -47,7 +50,32 @@ FIREFOX_PREFS: dict[str, object] = {
 }
 
 
+def verify_build(expected_sha256: str, install_dir: Path | None = None) -> None:
+    """Fail the image build unless the fetched browser is exactly the pinned one. `camoufox fetch` checks the
+    download against the digest GitHub reports; this checks that digest against the one recorded in
+    Dockerfile.browser, so a changed release asset cannot slip into a rebuild."""
+    if install_dir is None:
+        from camoufox.pkgman import INSTALL_DIR  # only in the browser image
+
+        install_dir = Path(INSTALL_DIR)
+    expected = expected_sha256.strip().lower()
+    if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+        raise SystemExit("the expected browser digest must be 64 hex digits")
+    found = []
+    for version_file in sorted(install_dir.rglob("version.json")):
+        try:
+            found.append(str(json.loads(version_file.read_text("utf-8")).get("sha256") or "").lower())
+        except (OSError, ValueError):
+            continue
+    if expected not in found:
+        raise SystemExit(f"the fetched browser build does not match the pinned digest (found: {found or 'none'})")
+
+
 def main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "--verify-build":
+        verify_build(sys.argv[2])
+        print("browser build matches the pinned digest")
+        return
     from camoufox.server import launch_server  # only in the browser image
 
     ws_path = os.environ.get("BROWSER_WS_PATH", "")
