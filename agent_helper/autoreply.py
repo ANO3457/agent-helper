@@ -64,17 +64,25 @@ def answer_for(message: str, base_url: str) -> tuple[str, str] | None:
     return None
 
 
+SENTENCE_PUNCTUATION = frozenset(".!?:;,…¿¡\"'`„‚ ")
+
+
+def _trimmed(char: str) -> bool:
+    return char in SENTENCE_PUNCTUATION or unicodedata.category(char) in ("Pi", "Pf")  # Pi/Pf: “ ” « » ‘ ’
+
+
 def question_key(message: str) -> str | None:
     """Key under which a first message counts as "the same question" (docs/decisions/0030).
 
-    NFKC, lower case, runs of whitespace as one space, punctuation and symbols at both ends removed. Only
-    an exact match of the result counts. None when nothing is left.
+    NFKC, lower case, runs of whitespace as one space, sentence punctuation and quotes at both ends removed.
+    Other symbols stay, so "C++" and "C", or "-1" and "1", remain different questions. Only an exact match
+    of the result counts. None when nothing is left.
     """
     text = " ".join(unicodedata.normalize("NFKC", message).casefold().split())
     start, end = 0, len(text)
-    while start < end and unicodedata.category(text[start])[0] in "PSZ":
+    while start < end and _trimmed(text[start]):
         start += 1
-    while end > start and unicodedata.category(text[end - 1])[0] in "PSZ":
+    while end > start and _trimmed(text[end - 1]):
         end -= 1
     text = text[start:end]
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None

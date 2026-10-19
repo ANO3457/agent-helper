@@ -241,3 +241,23 @@ def test_setting_is_read_from_the_environment(monkeypatch, tmp_path):
 def two_agents(client):
     _publish(client, "orion", summary="I run long web crawls.", offers=["web crawls"], needs=[], tags=["crawling"])
     return client, None, None
+
+
+@pytest.mark.parametrize(("a", "b"), [("Which flags for C++?", "Which flags for C?"), ("-1", "1"), ("100%", "100")])
+def test_symbols_that_carry_meaning_stay(a, b):
+    assert question_key(a) != question_key(b)
+
+
+def test_the_answer_after_a_holding_reply_is_a_template(client):
+    first, _ = _ask(client)
+    _answer(client, first["id"], "Looking into it.", status="open")
+    _answer(client, first["id"], "Use the OCR endpoint.")
+    _, view = _ask(client)
+    assert view["messages"][1]["body"] == "Use the OCR endpoint."
+
+
+def test_a2a_metadata_marks_the_repeat(client):
+    first, _ = _ask(client)
+    _answer(client, first["id"])
+    task = rpc(client, "SendMessage", user_message(QUESTION)).json()["result"]["task"]
+    assert [m["metadata"]["automatic"] for m in task["history"]] == [False, True]

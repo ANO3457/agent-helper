@@ -618,16 +618,16 @@ class Store:
 
     def _earlier_answer(self, key: str, req_id: str) -> dict[str, Any] | None:
         """The latest operator answer that came right after the first message of an earlier request with the
-        same question key, not counting automatic messages in between (so a correction of a repeated answer
-        becomes the new template). Only answers the operator wrote, and not holding replies that left the
-        request open or referrals; replies from before reply_status existed count as "answered"."""
+        same question key, not counting automatic messages or holding replies (status open) in between, so a
+        correction of a repeated answer or the answer after "looking into it" becomes the template. Only answers
+        the operator wrote, never referrals; replies from before reply_status existed count as "answered"."""
         row = self._db.execute(
             "SELECT r.id AS request_id, m.body, COALESCE(m.reply_status, 'answered') AS status"
             " FROM requests r JOIN request_messages m ON m.request_id = r.id"
             " WHERE r.question_key = ? AND r.id != ? AND m.sender = 'operator' AND m.automatic = 0"
             " AND COALESCE(m.reply_status, 'answered') IN ('answered', 'closed')"
             " AND m.id = (SELECT id FROM request_messages WHERE request_id = r.id AND automatic = 0"
-            " ORDER BY id LIMIT 1 OFFSET 1)"
+            " AND NOT (sender = 'operator' AND COALESCE(reply_status, '') = 'open') ORDER BY id LIMIT 1 OFFSET 1)"
             " ORDER BY m.id DESC LIMIT 1",
             (key, req_id),
         ).fetchone()
@@ -641,22 +641,24 @@ class Store:
             or self._db.execute("SELECT 1 FROM instance_meta WHERE name = 'question_keys_filled'").fetchone()
         ):
             return
-        firsts = self._db.execute(
-            "SELECT r.id, m.body FROM requests r JOIN request_messages m ON m.request_id = r.id"
-            " WHERE r.question_key IS NULL"
-            " AND m.id = (SELECT MIN(id) FROM request_messages WHERE request_id = r.id)"
-        ).fetchall()
-        self._db.executemany(
-            "UPDATE requests SET question_key = ? WHERE id = ?",
-            [(key, r["id"]) for r in firsts if (key := self._question_key(r["body"])) is not None],
-        )
-        self._db.execute(
-            "UPDATE request_messages SET reply_status = 'referral' WHERE sender = 'operator' AND reply_status IS NULL"
-            " AND body LIKE '%The operator referred this request to the agent with the handle%'"
-        )
-        self._db.execute(
-            "INSERT OR IGNORE INTO instance_meta (name, value) VALUES ('question_keys_filled', ?)", (now(),)
-        )
+        with self._tx():  # one transaction, not a commit per row
+            firsts = self._db.execute(
+                "SELECT r.id, m.body FROM requests r JOIN request_messages m ON m.request_id = r.id"
+                " WHERE r.question_key IS NULL"
+                " AND m.id = (SELECT MIN(id) FROM request_messages WHERE request_id = r.id)"
+            ).fetchall()
+            self._db.executemany(
+                "UPDATE requests SET question_key = ? WHERE id = ?",
+                [(key, r["id"]) for r in firsts if (key := self._question_key(r["body"])) is not None],
+            )
+            self._db.execute(
+                "UPDATE request_messages SET reply_status = 'referral'"
+                " WHERE sender = 'operator' AND reply_status IS NULL"
+                " AND body LIKE '%The operator referred this request to the agent with the handle%'"
+            )
+            self._db.execute(
+                "INSERT OR IGNORE INTO instance_meta (name, value) VALUES ('question_keys_filled', ?)", (now(),)
+            )
 
     def _request_view(self, row: sqlite3.Row) -> dict[str, Any]:
         msgs = self._db.execute(

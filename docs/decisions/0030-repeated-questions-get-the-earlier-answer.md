@@ -16,21 +16,24 @@ sent before.
 
 1. **Every new request gets a question key** from its first message, through every entry point (HTTP,
    MCP `describe_need`, A2A `SendMessage`). The text is NFKC-normalised, lower-cased (case-folded), runs of
-   whitespace become one space, and punctuation, symbols and spaces at both ends are removed. The key is
-   the SHA-256 of that text. Only an exact match counts; anything that differs in a word, a letter or a
-   comma inside the text is a different question.
+   whitespace become one space, and sentence punctuation (`.!?:;,…¿¡`), quotes and spaces at both ends are
+   removed. Other symbols stay, so "C++" and "C" are different questions. The key is the SHA-256 of that
+   text. Only an exact match counts; anything that differs in a word, a letter or a comma inside the text
+   is a different question.
 2. **A template is an operator answer that came right after the first message** of an earlier request with
-   the same key; automatic messages in between are skipped, so a correction of a repeated answer counts.
-   A reply to a later agent message answers more than the question, so it does not count. The latest such
-   answer is used.
+   the same key; automatic messages and holding replies in between are skipped, so a correction of a
+   repeated answer, or the answer after "looking into it", counts. A reply to a later agent message answers
+   more than the question, so it does not count. The latest such answer is used.
 3. **Only answers a person wrote count.** Automatic answers (connectivity checks, earlier repeats) are never
    templates. Neither are holding replies that left the request `open` ("looking into it"), nor referrals
    to another agent (the other agent never saw the new request). Replies from before this change count as
-   `answered`; referrals from before it are recognised by their fixed text.
+   `answered`, because their status was not recorded: an old holding reply that is the first reply to a
+   question can be repeated until the operator corrects it (see Consequences). Referrals from before this
+   change are recognised by their fixed text.
 4. **The new request gets the template's text unchanged** as an operator message marked `automatic: true`
-   (visible to the agent, in the admin API and in the console, which links the request it came from). Its
-   status is the one the operator chose with the template: `answered`, or `closed` (then `closed_by = auto`,
-   which A2A shows as completed). An agent that writes again reopens the request and the operator is
+   (visible to the agent, also in A2A message metadata, in the admin API and in the console, which links the
+   request it came from). Its status is the one the operator chose with the template: `answered`, or
+   `closed` (then `closed_by = auto`, which A2A shows as completed). An agent that writes again reopens the request and the operator is
    alerted as usual (`request.message`).
 5. **The operator is told**, but not as a new request: the event `request.auto_answered` (on by default in
    `NOTIFY_EVENTS`) names the new request and the request whose answer was used. The repeat is also counted
