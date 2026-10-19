@@ -108,6 +108,9 @@ class ConversationMessage(BaseModel):
     sender: Literal["agent", "operator"]
     created_at: str
     body: str
+    # Written by the service, not by a person: a connectivity check answer, or an earlier operator answer to
+    # the same question, repeated (docs/decisions/0026, 0030).
+    automatic: bool = False
 
 
 class RequestOut(BaseModel):

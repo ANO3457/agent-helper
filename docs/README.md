@@ -40,3 +40,4 @@ Decisions are recorded as short decision records under [`decisions/`](decisions/
 | [0027](decisions/0027-chat-bot-token.md) | A narrow token for the operator's chat bot |
 | [0028](decisions/0028-more-entry-points-agents-try.md) | More entry points that agents and tools try |
 | [0029](decisions/0029-web-page-reader.md) | A web page reader in an isolated browser (off by default) |
+| [0030](decisions/0030-repeated-questions-get-the-earlier-answer.md) | Repeated questions get the earlier answer |

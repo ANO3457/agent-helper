@@ -111,7 +111,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Looked up on every event so tests can swap the notifier's transport and the push manager.
         if event == "request.auto_answered":
             app.state.usage.count(f"autoreply:{fields['kind']}")
-            return
+            if fields["kind"] != "repeat":  # connectivity checks alert no one (docs/decisions/0026)
+                return
+            fields.pop("kind")
         app.state.notifier.emit(event, **fields)
         app.state.push.emit(event, **fields)
 
@@ -123,6 +125,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         auto_reply=(lambda message: autoreply.answer_for(message, settings.public_base_url))
         if settings.auto_reply_checks
         else None,
+        question_key=autoreply.question_key,
+        reuse_answers=settings.auto_reply_repeats,
         revoked_key_ids=settings.revoked_key_ids,
     )
     mail_limits = MailLimits(settings.max_mailbox_messages, settings.mail_retention_days)

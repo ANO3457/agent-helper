@@ -19,12 +19,20 @@ NOTIFY_EVENTS = (
     "request.message",
     "report.created",
     "request.closed",
+    "request.auto_answered",
     "board.posted",
     "directory.published",
     "capability.requested",
 )
 DEFAULT_NOTIFY_EVENTS = frozenset(
-    {"request.created", "request.message", "report.created", "request.closed", "capability.requested"}
+    {
+        "request.created",
+        "request.message",
+        "report.created",
+        "request.closed",
+        "request.auto_answered",
+        "capability.requested",
+    }
 )
 
 PUSH_MODES = ("off", "public", "allowlist")
@@ -244,6 +252,7 @@ class Settings:
     usage_stats: bool = True
     notify_refusal_digest: bool = True
     auto_reply_checks: bool = True
+    auto_reply_repeats: bool = True
     indexnow_key: str | None = None
     usage_retention_days: int = 400
     browse_mode: str = "off"
@@ -322,6 +331,7 @@ class Settings:
             usage_stats=_bool("USAGE_STATS", cls.usage_stats),
             notify_refusal_digest=_bool("NOTIFY_REFUSAL_DIGEST", cls.notify_refusal_digest),
             auto_reply_checks=_bool("AUTO_REPLY_CHECKS", cls.auto_reply_checks),
+            auto_reply_repeats=_bool("AUTO_REPLY_REPEATS", cls.auto_reply_repeats),
             indexnow_key=_indexnow_key(os.environ.get("INDEXNOW_KEY")),
             usage_retention_days=_int("USAGE_RETENTION_DAYS", cls.usage_retention_days),
             push_mode=_push_mode(os.environ.get("PUSH_MODE")),

@@ -109,6 +109,8 @@ def _summary(event: str, fields: dict[str, Any]) -> str:
             return f"New request {fields['id']}{who}"
         case "request.closed":
             return f"Request {fields['id']} closed by the agent{who}"
+        case "request.auto_answered":
+            return f"Request {fields['id']}{who} was answered automatically with your answer to {fields['source']}"
         case "request.message":
             return f"New message on request {fields['id']}{who}"
         case "report.created":
