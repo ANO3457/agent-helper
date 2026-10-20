@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from .handles import HANDLE_PATTERN
 
@@ -183,7 +183,20 @@ class BoardHead(BaseModel):
 RequestStatus = Literal["open", "answered", "closed"]
 
 
-RequestStatus = Literal["open", "answered", "closed"]
+class AutoRepliesIn(BaseModel):
+    """Change only the fields that are sent (docs/decisions/0030). At least one; unknown fields are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    checks: bool | None = None
+    repeats: bool | None = None
+    repeat_after: Annotated[int, Field(ge=1, le=1000)] | None = None
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> AutoRepliesIn:
+        if self.checks is None and self.repeats is None and self.repeat_after is None:
+            raise ValueError("send at least one of checks, repeats, repeat_after")
+        return self
 
 
 class OperatorReplyIn(BaseModel):

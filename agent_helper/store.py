@@ -309,6 +309,16 @@ class MailRefused(Exception):
 
 
 @dataclass(frozen=True)
+class AutoReplySettings:
+    """Which automatic answers are on (docs/decisions/0026, 0030). repeat_after: how often the same text must
+    have come before a stored answer is repeated."""
+
+    checks: bool
+    repeats: bool
+    repeat_after: int
+
+
+@dataclass(frozen=True)
 class MailLimits:
     max_mailbox: int = 500
     retention_days: int = 90
@@ -367,13 +377,14 @@ class Store:
         signing_key_file: Path | None = None,
         auto_reply: Callable[[str], tuple[str, str] | None] | None = None,
         question_key: Callable[[str], str | None] | None = None,
-        reuse_answers: bool = False,
+        auto_reply_defaults: AutoReplySettings | None = None,
         revoked_key_ids: tuple[tuple[str, str | None], ...] = (),
     ) -> None:
         self._on_event = on_event
         self._auto_reply = auto_reply
         self._question_key = question_key  # every first message gets a key; see docs/decisions/0030
-        self._reuse_answers = reuse_answers and question_key is not None
+        # Defaults from the environment; the operator can change them at run time (docs/decisions/0030).
+        self._auto_defaults = auto_reply_defaults or AutoReplySettings(checks=True, repeats=False, repeat_after=3)
         self._checkpoint_seconds = checkpoint_seconds
         self.clock_behind = False  # set while the clock is earlier than the last checkpoint
         self._last_mail_purge = -1e9
@@ -574,7 +585,8 @@ class Store:
                 "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'agent', ?, ?)",
                 (req_id, ts, message),
             )
-            auto = self._auto_reply(message) if self._auto_reply else None
+            auto_settings = self._auto_reply_settings()
+            auto = self._auto_reply(message) if self._auto_reply and auto_settings.checks else None
             repeat = None
             if auto is not None:
                 # A connectivity check (docs/decisions/0026): answered and closed at once, no operator alert.
@@ -587,8 +599,8 @@ class Store:
             key = self._question_key(message) if self._question_key else None
             if key is not None:
                 self._db.execute("UPDATE requests SET question_key = ? WHERE id = ?", (key, req_id))
-            if auto is None and key is not None and self._reuse_answers:
-                repeat = self._earlier_answer(key, req_id)
+            if auto is None and key is not None and auto_settings.repeats:
+                repeat = self._earlier_answer(key, req_id, auto_settings.repeat_after)
                 if repeat is not None:
                     # A question that was answered before (docs/decisions/0030): the latest such answer, again.
                     self._db.execute(
@@ -616,11 +628,50 @@ class Store:
             self._on_event("request.created", id=req_id, handle=handle, preview=message)
         return req_id, token, new_handle_token
 
-    def _earlier_answer(self, key: str, req_id: str) -> dict[str, Any] | None:
+    def _auto_reply_settings(self) -> AutoReplySettings:
+        d = self._auto_defaults
+        checks, repeats, after = (self._meta_value(f"auto_reply_{n}") for n in ("checks", "repeats", "repeat_after"))
+        return AutoReplySettings(
+            checks=d.checks if checks is None else checks == "on",
+            repeats=d.repeats if repeats is None else repeats == "on",
+            repeat_after=int(after) if after is not None and after.isdigit() and int(after) >= 1 else d.repeat_after,
+        )
+
+    def auto_reply_settings(self) -> AutoReplySettings:
+        with self._lock:
+            return self._auto_reply_settings()
+
+    def set_auto_reply_settings(
+        self, checks: bool | None = None, repeats: bool | None = None, repeat_after: int | None = None
+    ) -> AutoReplySettings:
+        """Stored in the database, so they apply to every worker and survive restarts; they win over the
+        environment defaults from then on."""
+        values = {
+            "auto_reply_checks": None if checks is None else ("on" if checks else "off"),
+            "auto_reply_repeats": None if repeats is None else ("on" if repeats else "off"),
+            "auto_reply_repeat_after": None if repeat_after is None else str(repeat_after),
+        }
+        with self._tx():
+            for name, value in values.items():
+                if value is not None:
+                    self._db.execute(
+                        "INSERT INTO instance_meta (name, value) VALUES (?, ?)"
+                        " ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                        (name, value),
+                    )
+            return self._auto_reply_settings()
+
+    def _earlier_answer(self, key: str, req_id: str, repeat_after: int) -> dict[str, Any] | None:
         """The latest operator answer that came right after the first message of an earlier request with the
         same question key, not counting automatic messages or holding replies (status open) in between, so a
         correction of a repeated answer or the answer after "looking into it" becomes the template. Only answers
-        the operator wrote, never referrals; replies from before reply_status existed count as "answered"."""
+        the operator wrote, never referrals; replies from before reply_status existed count as "answered".
+        None unless the same text came at least `repeat_after` times before."""
+        (count,) = self._db.execute(
+            "SELECT COUNT(*) FROM requests WHERE question_key = ? AND id != ?", (key, req_id)
+        ).fetchone()
+        if count < repeat_after:
+            return None
         row = self._db.execute(
             "SELECT r.id AS request_id, m.body, COALESCE(m.reply_status, 'answered') AS status"
             " FROM requests r JOIN request_messages m ON m.request_id = r.id"
@@ -634,18 +685,17 @@ class Store:
         return dict(row) if row else None
 
     def _fill_question_keys(self) -> None:
-        """Once per database: question keys for requests from before docs/decisions/0030, and referral
-        replies from then marked as such (their text is fixed), so neither is missing nor wrongly reused."""
+        """Once per database and key version: question keys for all requests (docs/decisions/0030), and old
+        referral replies marked as such (their text is fixed), so neither is missing nor wrongly reused."""
         if (
             self._question_key is None
-            or self._db.execute("SELECT 1 FROM instance_meta WHERE name = 'question_keys_filled'").fetchone()
+            or self._db.execute("SELECT 1 FROM instance_meta WHERE name = 'question_keys_v2'").fetchone()
         ):
             return
         with self._tx():  # one transaction, not a commit per row
             firsts = self._db.execute(
                 "SELECT r.id, m.body FROM requests r JOIN request_messages m ON m.request_id = r.id"
-                " WHERE r.question_key IS NULL"
-                " AND m.id = (SELECT MIN(id) FROM request_messages WHERE request_id = r.id)"
+                " WHERE m.id = (SELECT MIN(id) FROM request_messages WHERE request_id = r.id)"
             ).fetchall()
             self._db.executemany(
                 "UPDATE requests SET question_key = ? WHERE id = ?",
@@ -657,7 +707,7 @@ class Store:
                 " AND body LIKE '%The operator referred this request to the agent with the handle%'"
             )
             self._db.execute(
-                "INSERT OR IGNORE INTO instance_meta (name, value) VALUES ('question_keys_filled', ?)", (now(),)
+                "INSERT OR IGNORE INTO instance_meta (name, value) VALUES ('question_keys_v2', ?)", (now(),)
             )
 
     def _request_view(self, row: sqlite3.Row) -> dict[str, Any]:

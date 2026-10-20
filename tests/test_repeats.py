@@ -12,7 +12,7 @@ from test_notify import WEBHOOK, Recorder
 
 from agent_helper.autoreply import question_key
 from agent_helper.config import Settings
-from agent_helper.store import Store
+from agent_helper.store import AutoReplySettings, Store
 
 ADMIN = {"Authorization": f"Bearer {ADMIN_SECRET}"}
 QUESTION = "Where can I find a free OCR service for scanned PDFs?"
@@ -35,49 +35,49 @@ def _answer(client, req_id, message=ANSWER, status="answered"):
     assert r.status_code == 200, r.text
 
 
+@pytest.fixture
+def client(make_client):
+    """Most tests: one earlier occurrence is enough, so each case needs only one template."""
+    return make_client(auto_reply_repeat_after=1)
+
+
 def _notified(make_client, **overrides):
-    client = make_client(notify_webhook_url=WEBHOOK, **overrides)
+    client = make_client(notify_webhook_url=WEBHOOK, **({"auto_reply_repeat_after": 1} | overrides))
     rec = Recorder()
     client.app.state.notifier.transport = rec
     client.app.state.notifier.retry_delays = (0.0, 0.0)
     return client, rec
 
 
-@pytest.mark.parametrize(
-    "variant",
-    [
-        QUESTION,
-        "  where can i find a FREE ocr service for scanned pdfs  ",
-        "Where can I find a free OCR service\nfor scanned PDFs???",
-        "„Where can I find a free OCR service for scanned PDFs?“",
-        "Ｗhere can I find a free OCR service for scanned PDFs?",  # fullwidth W, NFKC
-    ],
-)
-def test_same_question_after_normalising(variant):
-    assert question_key(variant) == question_key(QUESTION)
+def test_only_whitespace_at_the_ends_is_ignored():
+    assert question_key(f"  {QUESTION}" + chr(10)) == question_key(QUESTION)
 
 
 @pytest.mark.parametrize(
     "other",
     [
+        QUESTION.lower(),
+        QUESTION.rstrip("?"),
+        QUESTION + "?",
+        QUESTION.replace(" OCR", "  OCR"),
+        "Ｗ" + QUESTION[1:],  # fullwidth W
         "Where can I find a free OCR service for scanned PDF?",
-        "Where can I find a free OCR service, for scanned PDFs?",
-        "Where can I find a free OCR service for scanned PDFs? I am in a hurry.",
+        "Which flags for C?",
     ],
 )
-def test_other_questions_differ(other):
+def test_any_other_text_is_another_question(other):
     assert question_key(other) != question_key(QUESTION)
 
 
 def test_nothing_left_has_no_key():
-    assert question_key(" ?!… ") is None
+    assert question_key(" " + chr(10) + chr(9) + " ") is None
 
 
 def test_repeat_gets_the_earlier_answer_and_the_operator_is_told(make_client):
     client, rec = _notified(make_client)
     first, _ = _ask(client)
     _answer(client, first["id"])
-    second, view = _ask(client, "where can I find a free OCR service for scanned PDFs", handle="lyra")
+    second, view = _ask(client, handle="lyra")
     assert view["status"] == "answered"
     assert [m["sender"] for m in view["messages"]] == ["agent", "operator"]
     assert view["messages"][1]["body"] == ANSWER and view["messages"][1]["automatic"] is True
@@ -104,14 +104,14 @@ def test_auto_answers_are_not_templates_but_a_correction_is(client):
     assert view["messages"][1]["body"] == "old answer"
     # The operator corrects the repeated answer: that correction is used from now on.
     _answer(client, second["id"], "corrected answer")
-    _, view = _ask(client, QUESTION.upper())
+    _, view = _ask(client)
     assert view["messages"][1]["body"] == "corrected answer"
 
 
 def test_status_is_copied(client):
     fresh, _ = _ask(client, "A brand new question nobody asked before")
     _answer(client, fresh["id"], "new answer, closed", status="closed")
-    _, view = _ask(client, "a brand new question nobody asked before!")
+    _, view = _ask(client, "A brand new question nobody asked before")
     assert view["status"] == "closed" and view["messages"][1]["body"] == "new answer, closed"
 
 
@@ -208,6 +208,7 @@ def test_connectivity_checks_are_marked_and_never_templates(client):
 
 def test_console_marks_the_repeat(console):  # noqa: F811
     client, _ = console
+    client.app.state.store.set_auto_reply_settings(repeat_after=1)
     first, _ = _ask(client)
     _answer(client, first["id"])
     second, _ = _ask(client)
@@ -223,8 +224,8 @@ def test_older_databases_get_keys_once(tmp_path):
     store.add_operator_reply(req_id, ANSWER, "answered")
     with sqlite3.connect(path) as db:  # a reply written before reply_status existed
         db.execute("UPDATE request_messages SET reply_status = NULL")
-    store = Store(path, question_key=question_key, reuse_answers=True)
-    new_id, token, _ = store.create_request(QUESTION.lower(), None, None)
+    store = Store(path, question_key=question_key, auto_reply_defaults=AutoReplySettings(True, True, 1))
+    new_id, token, _ = store.create_request(QUESTION, None, None)
     view = store.get_request(new_id, token)
     assert view["messages"][1]["body"] == ANSWER and view["messages"][1]["reused_from"] == req_id
 
@@ -235,17 +236,15 @@ def test_setting_is_read_from_the_environment(monkeypatch, tmp_path):
     assert Settings.from_env().auto_reply_repeats is False
     monkeypatch.delenv("AUTO_REPLY_REPEATS")
     assert Settings.from_env().auto_reply_repeats is True
+    assert Settings.from_env().auto_reply_repeat_after == 3
+    monkeypatch.setenv("AUTO_REPLY_REPEAT_AFTER", "5")
+    assert Settings.from_env().auto_reply_repeat_after == 5
 
 
 @pytest.fixture
 def two_agents(client):
     _publish(client, "orion", summary="I run long web crawls.", offers=["web crawls"], needs=[], tags=["crawling"])
     return client, None, None
-
-
-@pytest.mark.parametrize(("a", "b"), [("Which flags for C++?", "Which flags for C?"), ("-1", "1"), ("100%", "100")])
-def test_symbols_that_carry_meaning_stay(a, b):
-    assert question_key(a) != question_key(b)
 
 
 def test_the_answer_after_a_holding_reply_is_a_template(client):
@@ -261,3 +260,51 @@ def test_a2a_metadata_marks_the_repeat(client):
     _answer(client, first["id"])
     task = rpc(client, "SendMessage", user_message(QUESTION)).json()["result"]["task"]
     assert [m["metadata"]["automatic"] for m in task["history"]] == [False, True]
+
+
+def test_by_default_only_the_fourth_identical_request_is_answered(make_client):
+    client = make_client()
+    first, _ = _ask(client, "Hello! In one or two sentences, what can you help with?")
+    _answer(client, first["id"], "I connect agents with tools and a human operator.")
+    for _ in range(2):  # the 2nd and 3rd time: still for the operator
+        _, view = _ask(client, "Hello! In one or two sentences, what can you help with?")
+        assert view["status"] == "open" and len(view["messages"]) == 1
+    _, view = _ask(client, "Hello! In one or two sentences, what can you help with?")
+    assert view["messages"][1]["body"] == "I connect agents with tools and a human operator."
+
+
+BOT_TOKEN = "bot-token-" + "y" * 32
+
+
+def test_the_bot_can_read_and_change_the_settings(make_client):
+    client = make_client(operator_bot_token=BOT_TOKEN)
+    bot = {"Authorization": f"Bearer {BOT_TOKEN}"}
+    url = "/admin/v1/settings/auto-replies"
+    assert client.get(url, headers=bot).json() == {"checks": True, "repeats": True, "repeat_after": 3}
+    r = client.patch(url, json={"repeat_after": 1}, headers=bot)
+    assert r.json() == {"checks": True, "repeats": True, "repeat_after": 1}
+    first, _ = _ask(client)
+    _answer(client, first["id"])
+    _, view = _ask(client)
+    assert view["messages"][1]["automatic"] is True
+
+    assert client.patch(url, json={"repeats": False, "checks": False}, headers=bot).json()["repeats"] is False
+    _, view = _ask(client)
+    assert len(view["messages"]) == 1
+    _, view = _ask(client, "ping")
+    assert len(view["messages"]) == 1  # connectivity checks off too
+    assert client.patch(url, json={"repeat_after": 0}, headers=bot).status_code == 422
+    assert client.patch(url, json={"repeat_after": 1}).status_code == 401
+
+
+def test_settings_survive_a_restart_and_win_over_the_environment(tmp_path):
+    path = tmp_path / "s.db"
+    Store(path).set_auto_reply_settings(repeats=False, repeat_after=7)
+    store = Store(path, auto_reply_defaults=AutoReplySettings(checks=False, repeats=True, repeat_after=3))
+    assert store.auto_reply_settings() == AutoReplySettings(checks=False, repeats=False, repeat_after=7)
+
+
+def test_settings_changes_must_name_known_fields(client):
+    url = "/admin/v1/settings/auto-replies"
+    assert client.patch(url, json={}, headers=ADMIN).status_code == 422
+    assert client.patch(url, json={"repeat_afer": 2}, headers=ADMIN).status_code == 422

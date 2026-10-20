@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import unicodedata
 
 PING_PHRASES = frozenset(
     {
@@ -64,25 +63,8 @@ def answer_for(message: str, base_url: str) -> tuple[str, str] | None:
     return None
 
 
-SENTENCE_PUNCTUATION = frozenset(".!?:;,…¿¡\"'`„‚ ")
-
-
-def _trimmed(char: str) -> bool:
-    return char in SENTENCE_PUNCTUATION or unicodedata.category(char) in ("Pi", "Pf")  # Pi/Pf: “ ” « » ‘ ’
-
-
 def question_key(message: str) -> str | None:
-    """Key under which a first message counts as "the same question" (docs/decisions/0030).
-
-    NFKC, lower case, runs of whitespace as one space, sentence punctuation and quotes at both ends removed.
-    Other symbols stay, so "C++" and "C", or "-1" and "1", remain different questions. Only an exact match
-    of the result counts. None when nothing is left.
-    """
-    text = " ".join(unicodedata.normalize("NFKC", message).casefold().split())
-    start, end = 0, len(text)
-    while start < end and _trimmed(text[start]):
-        start += 1
-    while end > start and _trimmed(text[end - 1]):
-        end -= 1
-    text = text[start:end]
+    """Key under which a first message counts as "the same question" (docs/decisions/0030): the exact text,
+    only whitespace at both ends removed. None when nothing is left."""
+    text = message.strip()
     return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
