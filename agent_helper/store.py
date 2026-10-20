@@ -634,7 +634,7 @@ class Store:
         return AutoReplySettings(
             checks=d.checks if checks is None else checks == "on",
             repeats=d.repeats if repeats is None else repeats == "on",
-            repeat_after=d.repeat_after if after is None else int(after),
+            repeat_after=int(after) if after is not None and after.isdigit() and int(after) >= 1 else d.repeat_after,
         )
 
     def auto_reply_settings(self) -> AutoReplySettings:

@@ -38,7 +38,8 @@ sent before.
 6. Connectivity checks (0026) are matched first; a ping is never treated as a repeat.
 7. **Only frequent questions are answered automatically.** The same text must have arrived at least
    `repeat_after` times before (default 3, so from the fourth time on; `AUTO_REPLY_REPEAT_AFTER`). A question
-   that came twice by chance still goes to the operator.
+   that came twice by chance still goes to the operator. Every earlier request with that text counts, answered
+   or not and from any agent, including one agent's own retries.
 8. **The operator can switch it at run time**, also from the chat bot (0027):
    `GET /admin/v1/settings/auto-replies` returns `{"checks", "repeats", "repeat_after"}`, and `PATCH` with
    any of these fields changes them (`repeat_after` 1 to 1000). `checks` switches the connectivity answers

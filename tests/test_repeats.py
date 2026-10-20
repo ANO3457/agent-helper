@@ -302,3 +302,9 @@ def test_settings_survive_a_restart_and_win_over_the_environment(tmp_path):
     Store(path).set_auto_reply_settings(repeats=False, repeat_after=7)
     store = Store(path, auto_reply_defaults=AutoReplySettings(checks=False, repeats=True, repeat_after=3))
     assert store.auto_reply_settings() == AutoReplySettings(checks=False, repeats=False, repeat_after=7)
+
+
+def test_settings_changes_must_name_known_fields(client):
+    url = "/admin/v1/settings/auto-replies"
+    assert client.patch(url, json={}, headers=ADMIN).status_code == 422
+    assert client.patch(url, json={"repeat_afer": 2}, headers=ADMIN).status_code == 422
