@@ -15,6 +15,9 @@ dependencies = [
     "cryptography>=44,<50",
 ]
 
+[project.scripts]
+agent-helper-stdio = "agent_helper.stdio:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
