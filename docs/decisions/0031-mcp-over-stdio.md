@@ -22,6 +22,14 @@ exits before it answers, and the listing fails its checks.
    do not exist on stdio; they are derived from the message itself.
 4. **It is a separate local instance** with its own `DATA_DIR`, database and instance key. It does not
    forward anything to another instance, and nothing reaches the operator of a public instance through it.
+   This is enforced, not only documented:
+   - operator notifications (webhook), push to agents and the relay are switched off, whatever the
+     environment says;
+   - it refuses to start (exit code 2, reason on stderr) on a database it did not create itself, such as
+     the one of an HTTP server, and while another stdio process holds the lock file `stdio.lock` in the
+     same `DATA_DIR`.
+5. **Lines are limited like HTTP bodies** (`MAX_BODY_BYTES`). A longer line is skipped without being read
+   into memory and answered with a JSON-RPC error (`-32600`, `id` null).
 
 ## Consequences
 

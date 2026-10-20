@@ -3,7 +3,9 @@
 For clients and registries that start an MCP server as a local process and talk to it over stdin and
 stdout (one JSON-RPC message per line) instead of over HTTP. Each line goes through the same app as a
 POST to `/mcp` would, middleware included, so tools, limits and answers are those of the HTTP endpoint.
-The process is its own instance with its own `DATA_DIR`; it does not reach any other instance.
+The process is its own instance with its own `DATA_DIR`; it does not reach any other instance. That is
+enforced: push, relay and operator notifications are switched off, and it refuses to start on a database
+that another instance (an HTTP server, or a second stdio process) uses.
 
 Stdout carries only JSON-RPC messages; logs go to stderr.
 """
@@ -12,9 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
+import os
+import sqlite3
 import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import IO, Any
 from urllib.parse import urlsplit
 
 from starlette.types import ASGIApp as App
@@ -26,6 +33,81 @@ from .mcp import META_VERSION
 
 # The local process is the only client; it is counted and rate limited as one address.
 PEER = ("127.0.0.1", 0)
+OWNER_MARK = "served_by"  # instance_meta row: "stdio" once a stdio process created or used the database
+LOCK_FILE = "stdio.lock"
+
+
+class Refused(RuntimeError):
+    """The process must not start (docs/decisions/0031)."""
+
+
+class Oversized:
+    """A line longer than the body limit; it is skipped, not read into memory."""
+
+
+OVERSIZED = Oversized()
+
+
+def stdio_settings(settings: Settings) -> Settings:
+    """Nothing leaves this instance: no webhook to an operator, no push to agents, no relay."""
+    return dataclasses.replace(
+        settings, notify_webhook_url=None, notify_webhook_secret=None, push_mode="off", relay_url=None
+    )
+
+
+def line_reader(stream: IO[bytes], limit: int) -> Callable[[], bytes | Oversized]:
+    """readline() with the same limit as an HTTP body. A longer line is drained in chunks and reported."""
+
+    def read() -> bytes | Oversized:
+        line = stream.readline(limit + 1)
+        if len(line) <= limit or line.endswith(b"\n") and len(line) == limit + 1:
+            return line
+        while (rest := stream.readline(65536)) and not rest.endswith(b"\n"):
+            pass
+        return OVERSIZED
+
+    return read
+
+
+def claim_database(db_path: Path) -> Any:
+    """Refuse a database that belongs to another instance, and hold a lock so a second stdio process on the
+    same DATA_DIR is refused too. Returns the open lock file, to be kept open while serving."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = open(db_path.parent / LOCK_FILE, "a+b")  # noqa: SIM115 (held for the life of the process)
+    try:
+        _lock_exclusive(lock)
+    except OSError:
+        lock.close()
+        raise Refused(f"another stdio process uses {db_path.parent}; give each one its own DATA_DIR") from None
+    if db_path.exists() and db_path.stat().st_size > 0:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
+            try:
+                row = db.execute("SELECT value FROM instance_meta WHERE name = ?", (OWNER_MARK,)).fetchone()
+            except sqlite3.OperationalError:  # no such table: not a database of this service yet
+                row = ("stdio",) if not db.execute("SELECT 1 FROM sqlite_master").fetchone() else None
+        if row is None or row[0] != "stdio":
+            lock.close()
+            raise Refused(
+                f"{db_path} belongs to another instance (an HTTP server); the stdio mode needs its own DATA_DIR"
+            )
+    return lock
+
+
+def _lock_exclusive(lock: IO[bytes]) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def mark_database(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as db:
+        db.execute("INSERT OR IGNORE INTO instance_meta (name, value) VALUES (?, 'stdio')", (OWNER_MARK,))
 
 
 def _header_value(value: str) -> str:
@@ -139,11 +221,17 @@ class Lifespan:
             await self.task
 
 
-async def serve(app: App, host: str, reader: Callable[[], bytes], write: Callable[[bytes], None]) -> None:
+async def serve(
+    app: App, host: str, reader: Callable[[], bytes | Oversized], write: Callable[[bytes], None], limit: int = 0
+) -> None:
     """Answer each line from `reader` until it returns b"" (end of input)."""
     loop = asyncio.get_running_loop()
     async with Lifespan(app):
         while line := await loop.run_in_executor(None, reader):
+            if isinstance(line, Oversized):
+                error = {"code": -32600, "message": f"message exceeds {limit} bytes"}
+                write(json.dumps({"jsonrpc": "2.0", "id": None, "error": error}).encode() + b"\n")
+                continue
             line = line.strip()
             if not line:
                 continue
@@ -153,14 +241,23 @@ async def serve(app: App, host: str, reader: Callable[[], bytes], write: Callabl
 
 
 def main() -> None:
-    settings = Settings.from_env()
+    settings = stdio_settings(Settings.from_env())
     host = urlsplit(settings.public_base_url).netloc or "localhost"
+    try:
+        lock = claim_database(settings.db_path)
+    except Refused as e:
+        print(f"agent-helper stdio: {e}", file=sys.stderr)
+        sys.exit(2)
 
     def write(data: bytes) -> None:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
 
-    asyncio.run(serve(create_app(settings), host, sys.stdin.buffer.readline, write))
+    with lock:
+        app = create_app(settings)
+        mark_database(settings.db_path)
+        read = line_reader(sys.stdin.buffer, settings.max_body_bytes)
+        asyncio.run(serve(app, host, read, write, settings.max_body_bytes))
 
 
 if __name__ == "__main__":
