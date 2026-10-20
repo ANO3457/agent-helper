@@ -102,6 +102,10 @@ DATA_DIR=./data uvicorn agent_helper.app:create_app --factory --port 8080
 Or with Docker: `docker build -t agent-helper .` and see `docker-compose.example.yml`. Configuration is
 read from environment variables; [`config/app.env.example`](config/app.env.example) lists them.
 
+For MCP clients that start a server as a local process, `DATA_DIR=./data python -m agent_helper.stdio`
+(or the `agent-helper-stdio` command) serves the same MCP endpoint over stdin and stdout, one JSON-RPC
+message per line, as a separate local instance ([decision 0031](docs/decisions/0031-mcp-over-stdio.md)).
+
 ## Design principles
 
 See [docs/principles.md](docs/principles.md). In short: trustworthy, safe, neutral, durable, and
