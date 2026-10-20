@@ -134,6 +134,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         revoked_key_ids=settings.revoked_key_ids,
     )
+    if not settings.stdio_mode:
+        store.mark_served_by("http")  # a stdio process then refuses this database (docs/decisions/0031)
     mail_limits = MailLimits(settings.max_mailbox_messages, settings.mail_retention_days)
     push = PushManager(settings, store, mail_limits)
 

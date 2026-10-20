@@ -1,9 +1,20 @@
 import asyncio
+import io
 import json
+
+import pytest
 
 from agent_helper.app import create_app
 from agent_helper.config import Settings
-from agent_helper.stdio import serve
+from agent_helper.stdio import (
+    OVERSIZED,
+    Refused,
+    claim_database,
+    line_reader,
+    mark_database,
+    serve,
+    stdio_settings,
+)
 
 MODERN = "2026-07-28"
 
@@ -58,3 +69,64 @@ def test_modern_call_gets_its_headers_from_the_message(tmp_path):
 def test_unparseable_line_gets_a_parse_error(tmp_path):
     (reply,) = run(tmp_path, b"not json\n")
     assert reply["error"]["code"] == -32700
+
+
+def test_nothing_leaves_a_stdio_instance(tmp_path):
+    settings = Settings(
+        public_base_url="http://testserver",
+        data_dir=tmp_path,
+        notify_webhook_url="https://hooks.example.invalid/x",
+        notify_webhook_secret="s" * 32,
+        push_mode="public",
+        relay_url="https://relay.example.invalid",
+        browse_mode="on",
+        browse_gateway_url="http://browser.example.invalid:8080",
+        browse_secret="g" * 32,
+    )
+    local = stdio_settings(settings)
+    assert local.notify_webhook_url is None and local.push_mode == "off" and local.relay_url is None
+    assert not local.push_enabled and not local.browse_enabled
+
+
+def test_a_database_of_another_instance_is_refused(tmp_path):
+    settings = Settings(public_base_url="http://testserver", data_dir=tmp_path)
+    create_app(settings)  # an HTTP server created this database
+    with pytest.raises(Refused, match="another instance"):
+        claim_database(settings.db_path)
+
+
+def test_a_new_or_own_database_is_accepted_but_only_once_at_a_time(tmp_path):
+    settings = Settings(public_base_url="http://testserver", data_dir=tmp_path)
+    with claim_database(settings.db_path):
+        create_app(stdio_settings(settings))
+        mark_database(settings.db_path)
+        with pytest.raises(Refused, match="another stdio process"):
+            claim_database(settings.db_path)
+    with claim_database(settings.db_path):  # the same stdio instance, started again
+        pass
+
+
+def test_lines_are_limited_like_http_bodies(tmp_path):
+    stream = io.BytesIO(b"x" * 50 + b"\n" + b"y" * 10 + b"\n" + b"z" * 9 + b"\n")
+    read = line_reader(stream, 10)
+    assert read() is OVERSIZED
+    assert read() == b"y" * 10 + b"\n"
+    assert read() == b"z" * 9 + b"\n"
+    assert read() == b""
+
+    settings = Settings(public_base_url="http://testserver", data_dir=tmp_path, max_body_bytes=64)
+    stream = io.BytesIO(b'{"jsonrpc": "2.0", "id": 1, "method": "' + b"a" * 100 + b'"}\n')
+    out: list[bytes] = []
+    asyncio.run(serve(create_app(settings), "testserver", line_reader(stream, 64), out.append, 64))
+    (reply,) = [json.loads(chunk) for chunk in out]
+    assert reply["error"]["code"] == -32600 and reply["id"] is None
+
+
+def test_a_server_started_on_a_stdio_database_takes_it_over(tmp_path):
+    settings = Settings(public_base_url="http://testserver", data_dir=tmp_path)
+    with claim_database(settings.db_path):
+        create_app(stdio_settings(settings))
+        mark_database(settings.db_path)
+    create_app(settings)  # an HTTP server now uses this database
+    with pytest.raises(Refused, match="another instance"):
+        claim_database(settings.db_path)
