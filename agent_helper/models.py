@@ -186,6 +186,14 @@ RequestStatus = Literal["open", "answered", "closed"]
 RequestStatus = Literal["open", "answered", "closed"]
 
 
+class AutoRepliesIn(BaseModel):
+    """Change only the fields that are sent (docs/decisions/0030)."""
+
+    checks: bool | None = None
+    repeats: bool | None = None
+    repeat_after: Annotated[int, Field(ge=1, le=1000)] | None = None
+
+
 class OperatorReplyIn(BaseModel):
     message: MessageText
     status: RequestStatus = "answered"

@@ -253,6 +253,7 @@ class Settings:
     notify_refusal_digest: bool = True
     auto_reply_checks: bool = True
     auto_reply_repeats: bool = True
+    auto_reply_repeat_after: int = 3
     indexnow_key: str | None = None
     usage_retention_days: int = 400
     browse_mode: str = "off"
@@ -332,6 +333,7 @@ class Settings:
             notify_refusal_digest=_bool("NOTIFY_REFUSAL_DIGEST", cls.notify_refusal_digest),
             auto_reply_checks=_bool("AUTO_REPLY_CHECKS", cls.auto_reply_checks),
             auto_reply_repeats=_bool("AUTO_REPLY_REPEATS", cls.auto_reply_repeats),
+            auto_reply_repeat_after=max(1, _int("AUTO_REPLY_REPEAT_AFTER", cls.auto_reply_repeat_after)),
             indexnow_key=_indexnow_key(os.environ.get("INDEXNOW_KEY")),
             usage_retention_days=_int("USAGE_RETENTION_DAYS", cls.usage_retention_days),
             push_mode=_push_mode(os.environ.get("PUSH_MODE")),

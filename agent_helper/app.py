@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import hmac
 import logging
 from collections.abc import AsyncIterator
@@ -27,6 +28,7 @@ from .limits import GuardMiddleware, HeadAsGetMiddleware, TokenBucket, client_ke
 from .mcp import McpEndpoint
 from .models import (
     MAX_ID,
+    AutoRepliesIn,
     BoardEntry,
     BoardHead,
     BoardIn,
@@ -65,6 +67,7 @@ from .push import PushManager
 from .pushcheck import DestinationRefused
 from .store import (
     CHALLENGE_SECONDS,
+    AutoReplySettings,
     ConversationFull,
     HandleUnavailable,
     MailLimits,
@@ -122,11 +125,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         on_event=on_event,
         checkpoint_seconds=settings.board_checkpoint_seconds,
         signing_key_file=settings.instance_signing_key_file,
-        auto_reply=(lambda message: autoreply.answer_for(message, settings.public_base_url))
-        if settings.auto_reply_checks
-        else None,
+        auto_reply=lambda message: autoreply.answer_for(message, settings.public_base_url),
         question_key=autoreply.question_key,
-        reuse_answers=settings.auto_reply_repeats,
+        auto_reply_defaults=AutoReplySettings(
+            checks=settings.auto_reply_checks,
+            repeats=settings.auto_reply_repeats,
+            repeat_after=settings.auto_reply_repeat_after,
+        ),
         revoked_key_ids=settings.revoked_key_ids,
     )
     mail_limits = MailLimits(settings.max_mailbox_messages, settings.mail_retention_days)
@@ -911,6 +916,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ("GET", "/admin/v1/requests"),
             ("GET", "/admin/v1/requests/{req_id}"),
             ("POST", "/admin/v1/requests/{req_id}/replies"),
+            ("GET", "/admin/v1/settings/auto-replies"),
+            ("PATCH", "/admin/v1/settings/auto-replies"),
         }
     )
 
@@ -926,7 +933,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(401, "unauthorized")
         route = request.scope.get("route")
         if (request.method, getattr(route, "path", "")) not in bot_routes:
-            raise HTTPException(403, "this token may only list, read and answer requests")
+            raise HTTPException(403, "this token may only list, read and answer requests and set auto-replies")
         request.state.via = "telegram"
 
     admin = APIRouter(prefix="/admin/v1", dependencies=[Depends(require_admin)], include_in_schema=False)
@@ -948,6 +955,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if getattr(request.state, "via", None):
             audit.info("operator read %s via %s", req_id, request.state.via)
         return RequestOut(**found)
+
+    @admin.get("/settings/auto-replies")
+    def admin_auto_replies() -> dict[str, Any]:
+        return dataclasses.asdict(store.auto_reply_settings())
+
+    @admin.patch("/settings/auto-replies")
+    def admin_set_auto_replies(body: AutoRepliesIn, request: Request) -> dict[str, Any]:
+        found = store.set_auto_reply_settings(body.checks, body.repeats, body.repeat_after)
+        via = getattr(request.state, "via", "admin API")
+        audit.info(
+            "operator set auto-replies: checks=%s repeats=%s repeat_after=%d via %s",
+            found.checks, found.repeats, found.repeat_after, via,
+        )  # fmt: skip
+        return dataclasses.asdict(found)
 
     @admin.post("/requests/{req_id}/replies")
     def admin_reply(req_id: str, body: OperatorReplyIn, request: Request) -> RequestOut:
