@@ -257,6 +257,7 @@ class Settings:
     indexnow_key: str | None = None
     usage_retention_days: int = 400
     browse_mode: str = "off"
+    stdio_mode: bool = False  # set only by agent_helper.stdio (docs/decisions/0031)
     browse_gateway_url: str | None = None
     browse_secret: str | None = None
     browse_timeout: float = 30.0

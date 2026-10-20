@@ -458,6 +458,15 @@ class Store:
                 f"REVOKED_KEY_IDS: the time for {kid} is before the key's first checkpoint ({row['first']})"
             )
 
+    def mark_served_by(self, kind: str) -> None:
+        """Which kind of instance serves this database; the stdio mode refuses one an HTTP server uses."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO instance_meta (name, value) VALUES ('served_by', ?)"
+                " ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                (kind,),
+            )
+
     def _meta_value(self, name: str) -> str | None:
         row = self._db.execute("SELECT value FROM instance_meta WHERE name = ?", (name,)).fetchone()
         return row["value"] if row else None

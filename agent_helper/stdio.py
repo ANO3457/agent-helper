@@ -49,9 +49,18 @@ OVERSIZED = Oversized()
 
 
 def stdio_settings(settings: Settings) -> Settings:
-    """Nothing leaves this instance: no webhook to an operator, no push to agents, no relay."""
+    """Nothing leaves this instance: no webhook to an operator, no push to agents, no relay, no jobs for a
+    browser gateway. `stdio_mode` keeps the app from marking the database as an HTTP server's."""
     return dataclasses.replace(
-        settings, notify_webhook_url=None, notify_webhook_secret=None, push_mode="off", relay_url=None
+        settings,
+        notify_webhook_url=None,
+        notify_webhook_secret=None,
+        push_mode="off",
+        relay_url=None,
+        browse_mode="off",
+        browse_gateway_url=None,
+        browse_secret=None,
+        stdio_mode=True,
     )
 
 
