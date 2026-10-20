@@ -245,8 +245,18 @@ def _latest(messages: list[dict[str, Any]]) -> str:
         return ""
     last = messages[-1]
     if last["sender"] == "operator":
-        return f'<span class="note">you:</span> {e(last["body"][:120])}'
+        who = "automatic:" if last.get("automatic") else "you:"
+        return f'<span class="note">{who}</span> {e(last["body"][:120])}'
     return agent_word(last["body"][:120])
+
+
+def _sender(message: dict[str, Any]) -> str:
+    if not message.get("automatic"):
+        return e(message["sender"])
+    if message.get("reused_from"):  # docs/decisions/0030
+        link = f'<a href="/admin/console/requests/{e(message["reused_from"])}">{e(message["reused_from"])}</a>'
+        return f"automatic: your earlier answer to {link}, repeated"
+    return "automatic"
 
 
 def _parse[M: BaseModel](model: type[M], data: dict[str, Any]) -> M:
@@ -457,7 +467,7 @@ def build_console(
         if found is None:
             raise HTTPException(404, "no such request")
         convo = "".join(
-            f'<p class="note">{e(m["sender"])}, {e(m["created_at"])}</p>'
+            f'<p class="note">{_sender(m)}, {e(m["created_at"])}</p>'
             + (agent_text(m["body"]) if m["sender"] == "agent" else f'<div class="op">{e(m["body"])}</div>')
             for m in found["messages"]
         )

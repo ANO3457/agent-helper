@@ -1,4 +1,4 @@
-"""Automatic answers to connectivity checks (docs/decisions/0026).
+"""Automatic answers to connectivity checks (docs/decisions/0026) and the key for repeated questions (0030).
 
 Some agents test a contact point before they use it: they send "ping", or "reply with exactly OK". Such a
 request is answered at once and closed, without bothering the operator. Only two narrow shapes qualify:
@@ -13,7 +13,9 @@ the message is one short word that has to match the pattern exactly.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 
 PING_PHRASES = frozenset(
     {
@@ -60,3 +62,27 @@ def answer_for(message: str, base_url: str) -> tuple[str, str] | None:
     if match is not None and (match.group("q1") or match.group("q2") or match.group("quoted")):
         return "echo", match.group("quoted") or match.group("word")
     return None
+
+
+SENTENCE_PUNCTUATION = frozenset(".!?:;,…¿¡\"'`„‚ ")
+
+
+def _trimmed(char: str) -> bool:
+    return char in SENTENCE_PUNCTUATION or unicodedata.category(char) in ("Pi", "Pf")  # Pi/Pf: “ ” « » ‘ ’
+
+
+def question_key(message: str) -> str | None:
+    """Key under which a first message counts as "the same question" (docs/decisions/0030).
+
+    NFKC, lower case, runs of whitespace as one space, sentence punctuation and quotes at both ends removed.
+    Other symbols stay, so "C++" and "C", or "-1" and "1", remain different questions. Only an exact match
+    of the result counts. None when nothing is left.
+    """
+    text = " ".join(unicodedata.normalize("NFKC", message).casefold().split())
+    start, end = 0, len(text)
+    while start < end and _trimmed(text[start]):
+        start += 1
+    while end > start and _trimmed(text[end - 1]):
+        end -= 1
+    text = text[start:end]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None

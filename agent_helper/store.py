@@ -366,10 +366,14 @@ class Store:
         checkpoint_seconds: int = 3600,
         signing_key_file: Path | None = None,
         auto_reply: Callable[[str], tuple[str, str] | None] | None = None,
+        question_key: Callable[[str], str | None] | None = None,
+        reuse_answers: bool = False,
         revoked_key_ids: tuple[tuple[str, str | None], ...] = (),
     ) -> None:
         self._on_event = on_event
         self._auto_reply = auto_reply
+        self._question_key = question_key  # every first message gets a key; see docs/decisions/0030
+        self._reuse_answers = reuse_answers and question_key is not None
         self._checkpoint_seconds = checkpoint_seconds
         self.clock_behind = False  # set while the clock is earlier than the last checkpoint
         self._last_mail_purge = -1e9
@@ -461,7 +465,14 @@ class Store:
             "board_payloads": [("tags", "TEXT"), ("expires_at", "TEXT"), ("key_id", "TEXT"), ("signature", "TEXT")],
             "mail": [("key_id", "TEXT"), ("signature", "TEXT")],
             "board_purged": [("expires_at", "TEXT")],
-            "requests": [("closed_by", "TEXT")],
+            "requests": [("closed_by", "TEXT"), ("question_key", "TEXT")],
+            # automatic: written by the service, not the operator. reused_from: the request whose answer was
+            # repeated. reply_status: the status the operator chose with the reply (docs/decisions/0030).
+            "request_messages": [
+                ("automatic", "INTEGER NOT NULL DEFAULT 0"),
+                ("reused_from", "TEXT"),
+                ("reply_status", "TEXT"),
+            ],
         }
         for table, columns in added.items():
             present = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
@@ -469,6 +480,8 @@ class Store:
                 if name not in present:
                     self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
         self._db.execute("CREATE INDEX IF NOT EXISTS board_by_expiry ON board_payloads (expires_at)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS requests_by_question ON requests (question_key)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS messages_by_request ON request_messages (request_id, id)")
         # Payloads cannot be updated, so the lower-cased search text lives in its own table; fill it for old rows.
         missing = self._db.execute(
             "SELECT p.seq, p.topic, p.content FROM board_payloads p"
@@ -478,6 +491,7 @@ class Store:
             "INSERT INTO board_search (seq, text) VALUES (?, ?)",
             [(r["seq"], _search_text(r["topic"], r["content"])) for r in missing],
         )
+        self._fill_question_keys()
 
     @contextmanager
     def _tx(self) -> Iterator[None]:
@@ -561,22 +575,95 @@ class Store:
                 (req_id, ts, message),
             )
             auto = self._auto_reply(message) if self._auto_reply else None
+            repeat = None
             if auto is not None:
                 # A connectivity check (docs/decisions/0026): answered and closed at once, no operator alert.
                 self._db.execute(
-                    "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'operator', ?, ?)",
+                    "INSERT INTO request_messages (request_id, sender, created_at, body, automatic)"
+                    " VALUES (?, 'operator', ?, ?, 1)",
                     (req_id, ts, auto[1]),
                 )
                 self._db.execute("UPDATE requests SET status = 'closed', closed_by = 'auto' WHERE id = ?", (req_id,))
+            key = self._question_key(message) if self._question_key else None
+            if key is not None:
+                self._db.execute("UPDATE requests SET question_key = ? WHERE id = ?", (key, req_id))
+            if auto is None and key is not None and self._reuse_answers:
+                repeat = self._earlier_answer(key, req_id)
+                if repeat is not None:
+                    # A question that was answered before (docs/decisions/0030): the latest such answer, again.
+                    self._db.execute(
+                        "INSERT INTO request_messages (request_id, sender, created_at, body, automatic, reused_from,"
+                        " reply_status) VALUES (?, 'operator', ?, ?, 1, ?, ?)",
+                        (req_id, ts, repeat["body"], repeat["request_id"], repeat["status"]),
+                    )
+                    closed_by = "auto" if repeat["status"] == "closed" else None
+                    self._db.execute(
+                        "UPDATE requests SET status = ?, closed_by = ? WHERE id = ?",
+                        (repeat["status"], closed_by, req_id),
+                    )
         if auto is not None:
             self._on_event("request.auto_answered", id=req_id, kind=auto[0])
+        elif repeat is not None:
+            self._on_event(
+                "request.auto_answered",
+                id=req_id,
+                kind="repeat",
+                handle=handle,
+                source=repeat["request_id"],
+                preview=message,
+            )
         else:
             self._on_event("request.created", id=req_id, handle=handle, preview=message)
         return req_id, token, new_handle_token
 
+    def _earlier_answer(self, key: str, req_id: str) -> dict[str, Any] | None:
+        """The latest operator answer that came right after the first message of an earlier request with the
+        same question key, not counting automatic messages or holding replies (status open) in between, so a
+        correction of a repeated answer or the answer after "looking into it" becomes the template. Only answers
+        the operator wrote, never referrals; replies from before reply_status existed count as "answered"."""
+        row = self._db.execute(
+            "SELECT r.id AS request_id, m.body, COALESCE(m.reply_status, 'answered') AS status"
+            " FROM requests r JOIN request_messages m ON m.request_id = r.id"
+            " WHERE r.question_key = ? AND r.id != ? AND m.sender = 'operator' AND m.automatic = 0"
+            " AND COALESCE(m.reply_status, 'answered') IN ('answered', 'closed')"
+            " AND m.id = (SELECT id FROM request_messages WHERE request_id = r.id AND automatic = 0"
+            " AND NOT (sender = 'operator' AND COALESCE(reply_status, '') = 'open') ORDER BY id LIMIT 1 OFFSET 1)"
+            " ORDER BY m.id DESC LIMIT 1",
+            (key, req_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _fill_question_keys(self) -> None:
+        """Once per database: question keys for requests from before docs/decisions/0030, and referral
+        replies from then marked as such (their text is fixed), so neither is missing nor wrongly reused."""
+        if (
+            self._question_key is None
+            or self._db.execute("SELECT 1 FROM instance_meta WHERE name = 'question_keys_filled'").fetchone()
+        ):
+            return
+        with self._tx():  # one transaction, not a commit per row
+            firsts = self._db.execute(
+                "SELECT r.id, m.body FROM requests r JOIN request_messages m ON m.request_id = r.id"
+                " WHERE r.question_key IS NULL"
+                " AND m.id = (SELECT MIN(id) FROM request_messages WHERE request_id = r.id)"
+            ).fetchall()
+            self._db.executemany(
+                "UPDATE requests SET question_key = ? WHERE id = ?",
+                [(key, r["id"]) for r in firsts if (key := self._question_key(r["body"])) is not None],
+            )
+            self._db.execute(
+                "UPDATE request_messages SET reply_status = 'referral'"
+                " WHERE sender = 'operator' AND reply_status IS NULL"
+                " AND body LIKE '%The operator referred this request to the agent with the handle%'"
+            )
+            self._db.execute(
+                "INSERT OR IGNORE INTO instance_meta (name, value) VALUES ('question_keys_filled', ?)", (now(),)
+            )
+
     def _request_view(self, row: sqlite3.Row) -> dict[str, Any]:
         msgs = self._db.execute(
-            "SELECT sender, created_at, body FROM request_messages WHERE request_id = ? ORDER BY id",
+            "SELECT sender, created_at, body, automatic != 0 AS automatic, reused_from FROM request_messages"
+            " WHERE request_id = ? ORDER BY id",
             (row["id"],),
         ).fetchall()
         return {
@@ -647,8 +734,9 @@ class Store:
             if row is None:
                 return None
             self._db.execute(
-                "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'operator', ?, ?)",
-                (req_id, now(), body),
+                "INSERT INTO request_messages (request_id, sender, created_at, body, reply_status)"
+                " VALUES (?, 'operator', ?, ?, ?)",
+                (req_id, now(), body, status),
             )
             closed_by = "operator" if status == "closed" else None
             self._db.execute("UPDATE requests SET status = ?, closed_by = ? WHERE id = ?", (status, closed_by, req_id))
@@ -1411,6 +1499,8 @@ class Store:
                 "INSERT INTO request_messages (request_id, sender, created_at, body) VALUES (?, 'operator', ?, ?)",
                 (req_id, now(), reply[:8000]),
             )
+            # Marked so the referral is never repeated to another agent as an answer (docs/decisions/0030).
+            self._db.execute("UPDATE request_messages SET reply_status = 'referral' WHERE id = last_insert_rowid()")
             self._db.execute("UPDATE requests SET status = 'answered' WHERE id = ?", (req_id,))
             row = self._db.execute("SELECT * FROM requests WHERE id = ?", (req_id,)).fetchone()
             view = self._request_view(row)
